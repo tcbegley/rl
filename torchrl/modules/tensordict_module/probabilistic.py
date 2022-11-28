@@ -92,12 +92,13 @@ class SafeProbabilisticModule(ProbabilisticTensorDictModule, SafeModule):
         >>> net = NormalParamWrapper(torch.nn.GRUCell(4, 8))
         >>> module = SafeModule(net, in_keys=["input", "hidden"], out_keys=["loc", "scale"])
         >>> td_module = SafeProbabilisticModule(
-        ...    module=module,
-        ...    spec=spec,
-        ...    dist_in_keys=["loc", "scale"],
-        ...    sample_out_key=["action"],
-        ...    distribution_class=TanhNormal,
-        ...    )
+        ...     module=module,
+        ...     spec=spec,
+        ...     dist_in_keys=["loc", "scale"],
+        ...     sample_out_key=["action"],
+        ...     distribution_class=TanhNormal,
+        ...     return_log_prob=True,
+        ... )
         >>> params = make_functional(td_module)
         >>> td_module(td, params=params)
         >>> print(td)
@@ -107,6 +108,7 @@ class SafeProbabilisticModule(ProbabilisticTensorDictModule, SafeModule):
                 hidden: Tensor(torch.Size([3, 8]), dtype=torch.float32),
                 input: Tensor(torch.Size([3, 4]), dtype=torch.float32),
                 loc: Tensor(torch.Size([3, 4]), dtype=torch.float32),
+                sample_log_prob: Tensor(torch.Size([3, 1]), dtype=torch.float32),
                 scale: Tensor(torch.Size([3, 4]), dtype=torch.float32)},
             batch_size=torch.Size([3]),
             device=None,
@@ -122,6 +124,7 @@ class SafeProbabilisticModule(ProbabilisticTensorDictModule, SafeModule):
                 hidden: Tensor(torch.Size([4, 3, 8]), dtype=torch.float32),
                 input: Tensor(torch.Size([4, 3, 4]), dtype=torch.float32),
                 loc: Tensor(torch.Size([4, 3, 4]), dtype=torch.float32),
+                sample_log_prob: Tensor(torch.Size([4, 3, 1]), dtype=torch.float32),
                 scale: Tensor(torch.Size([4, 3, 4]), dtype=torch.float32)},
             batch_size=torch.Size([4, 3]),
             device=None,

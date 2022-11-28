@@ -42,12 +42,13 @@ class SafeSequential(TensorDictSequential, SafeModule):
         >>> net1 = NormalParamWrapper(torch.nn.Linear(4, 8))
         >>> module1 = SafeModule(net1, in_keys=["input"], out_keys=["loc", "scale"])
         >>> td_module1 = SafeProbabilisticModule(
-        ...    module=module1,
-        ...    spec=spec1,
-        ...    dist_in_keys=["loc", "scale"],
-        ...    sample_out_key=["hidden"],
-        ...    distribution_class=TanhNormal,
-        ...    )
+        ...     module=module1,
+        ...     spec=spec1,
+        ...     dist_in_keys=["loc", "scale"],
+        ...     sample_out_key=["hidden"],
+        ...     distribution_class=TanhNormal,
+        ...     return_log_prob=True,
+        ... )
         >>> spec2 = NdUnboundedContinuousTensorSpec(8)
         >>> module2 = torch.nn.Linear(4, 8)
         >>> td_module2 = SafeModule(
@@ -66,11 +67,11 @@ class SafeSequential(TensorDictSequential, SafeModule):
                 input: Tensor(torch.Size([3, 4]), dtype=torch.float32),
                 loc: Tensor(torch.Size([3, 4]), dtype=torch.float32),
                 output: Tensor(torch.Size([3, 8]), dtype=torch.float32),
+                sample_log_prob: Tensor(torch.Size([3, 1]), dtype=torch.float32),
                 scale: Tensor(torch.Size([3, 4]), dtype=torch.float32)},
             batch_size=torch.Size([3]),
             device=None,
             is_shared=False)
-
         >>> # The module spec aggregates all the input specs:
         >>> print(td_module.spec)
         CompositeSpec(
@@ -92,11 +93,11 @@ class SafeSequential(TensorDictSequential, SafeModule):
                 input: Tensor(torch.Size([4, 3, 4]), dtype=torch.float32),
                 loc: Tensor(torch.Size([4, 3, 4]), dtype=torch.float32),
                 output: Tensor(torch.Size([4, 3, 8]), dtype=torch.float32),
+                sample_log_prob: Tensor(torch.Size([4, 3, 1]), dtype=torch.float32),
                 scale: Tensor(torch.Size([4, 3, 4]), dtype=torch.float32)},
             batch_size=torch.Size([4, 3]),
             device=None,
             is_shared=False)
-
 
     """
 
