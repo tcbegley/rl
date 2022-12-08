@@ -4,15 +4,18 @@
 # LICENSE file in the root directory of this source tree.
 
 import warnings
-from typing import Optional, Sequence, Type, Union
+from typing import Optional, Sequence, Tuple, Type, Union
 
 from tensordict.nn import TensorDictModule
+from tensordict.nn.functional_modules import repopulate_module
+from tensordict.nn.probabilistic import interaction_mode, set_interaction_mode
 from tensordict.nn.prototype import (
     ProbabilisticTensorDictModule,
     ProbabilisticTensorDictSequential,
 )
 from tensordict.tensordict import TensorDictBase
 
+from torch import distributions as d
 from torchrl.data import CompositeSpec, TensorSpec
 from torchrl.modules.distributions import Delta
 from torchrl.modules.tensordict_module.common import _forward_hook_safe_action
@@ -189,7 +192,7 @@ class SafeProbabilisticModule(ProbabilisticTensorDictModule):
         return self.random(tensordict)
 
 
-class SafeProbabilisticSequential(ProbabilisticTensorDictSequential, SafeSequential):
+class SafeProbabilisticSequential(SafeSequential):
     """A :obj:``SafeProbabilisticSequential`` is an :obj:``tensordict.nn.prototype.ProbabilisticTensorDictSequential`` subclass that accepts a :obj:``TensorSpec`` as argument to control the output domain.
 
     Similarly to :obj:`TensorDictSequential`, but enforces that the final module in the
@@ -215,7 +218,62 @@ class SafeProbabilisticSequential(ProbabilisticTensorDictSequential, SafeSequent
         *modules: Union[TensorDictModule, ProbabilisticTensorDictModule],
         partial_tolerant: bool = False,
     ) -> None:
+        if len(modules) == 0:
+            raise ValueError(
+                "ProbabilisticTensorDictSequential must consist of zero or more "
+                "TensorDictModules followed by a ProbabilisticTensorDictModule"
+            )
+        if not isinstance(
+            modules[-1],
+            (ProbabilisticTensorDictModule, ProbabilisticTensorDictSequential),
+        ):
+            raise TypeError(
+                "The final module passed to ProbabilisticTensorDictSequential must be "
+                "an instance of ProbabilisticTensorDictModule or another "
+                "ProbabilisticTensorDictSequential"
+            )
+        # if the modules not including the final probabilistic module return the sampled
+        # key we wont be sampling it again, in that case
+        # ProbabilisticTensorDictSequential is presumably used to return the
+        # distribution using `get_dist` or to sample log_probabilities
+        _, out_keys = self._compute_in_and_out_keys(modules[:-1])
+        self._requires_sample = modules[-1].out_keys[0] not in set(out_keys)
         super().__init__(*modules, partial_tolerant=partial_tolerant)
-        super(ProbabilisticTensorDictSequential, self).__init__(
-            *modules, partial_tolerant=partial_tolerant
-        )
+
+    def get_dist_params(
+        self,
+        tensordict: TensorDictBase,
+        tensordict_out: Optional[TensorDictBase] = None,
+        **kwargs,
+    ) -> Tuple[d.Distribution, TensorDictBase]:
+        tds = SafeSequential(*self.module[:-1])
+        if self.__dict__.get("_is_stateless", False):
+            tds = repopulate_module(tds, kwargs.pop("params"))
+        mode = interaction_mode()
+        if mode is None:
+            mode = self.module[-1].default_interaction_mode
+        with set_interaction_mode(mode):
+            return tds(tensordict, tensordict_out, **kwargs)
+
+    def get_dist(
+        self,
+        tensordict: TensorDictBase,
+        tensordict_out: Optional[TensorDictBase] = None,
+        **kwargs,
+    ) -> d.Distribution:
+        """Get the distribution that results from passing the input tensordict through the sequence, and then using the resulting parameters."""
+        tensordict_out = self.get_dist_params(tensordict, tensordict_out, **kwargs)
+        return self.build_dist_from_params(tensordict_out)
+
+    def build_dist_from_params(self, tensordict: TensorDictBase) -> d.Distribution:
+        """Construct a distribution from the input parameters. Other modules in the sequence are not evaluated."""
+        return self.module[-1].get_dist(tensordict)
+
+    def forward(
+        self,
+        tensordict: TensorDictBase,
+        tensordict_out: Optional[TensorDictBase] = None,
+        **kwargs,
+    ) -> TensorDictBase:
+        tensordict_out = self.get_dist_params(tensordict, tensordict_out, **kwargs)
+        return self.module[-1](tensordict_out, _requires_sample=self._requires_sample)
