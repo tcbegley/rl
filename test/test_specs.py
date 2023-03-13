@@ -2276,8 +2276,13 @@ class TestStackComposite:
     @pytest.mark.parametrize("stack_dim", [0, 1, 2, -3, -2, -1])
     def test_to(self, stack_dim):
         c1 = CompositeSpec(a=UnboundedContinuousTensorSpec(shape=(1, 3)), shape=(1, 3))
-        c2 = c1.clone()
+        c2 = CompositeSpec(
+            a=UnboundedContinuousTensorSpec(shape=(1, 3)),
+            b=UnboundedDiscreteTensorSpec(shape=(1, 3)),
+            shape=(1, 3),
+        )
         c = torch.stack([c1, c2], stack_dim)
+        assert isinstance(c, LazyStackedCompositeSpec)
         cdevice = c.to("cuda:0")
         assert cdevice.device != c.device
         assert cdevice.device == torch.device("cuda:0")
