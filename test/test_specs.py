@@ -2286,7 +2286,10 @@ class TestStackComposite:
         cdevice = c.to("cuda:0")
         assert cdevice.device != c.device
         assert cdevice.device == torch.device("cuda:0")
-        assert cdevice[0].device == torch.device("cuda:0")
+        if stack_dim < 0:
+            stack_dim += 3
+        index = (slice(None),) * stack_dim + (0,)
+        assert cdevice[index].device == torch.device("cuda:0")
 
     def test_clone(self):
         c1 = CompositeSpec(a=UnboundedContinuousTensorSpec(shape=(1, 3)), shape=(1, 3))
