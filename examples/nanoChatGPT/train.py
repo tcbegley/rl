@@ -27,7 +27,6 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn as nn
-
 from nanoGPT.model import GPT, GPTConfig
 from tensordict.nn import TensorDictModule
 from tensordict.prototype import tensorclass
