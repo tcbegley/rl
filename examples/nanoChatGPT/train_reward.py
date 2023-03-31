@@ -245,7 +245,7 @@ def create_loss_estimator(config):
             with ctx:
                 reward_chosen = model(batch.chosen)
                 reward_rejected = model(batch.rejected)
-                loss = -torch.log(torch.sigmoid(reward_chosen.reward - reward_rejected.reward)).mean()
+                loss = -torch.log(torch.sigmoid(reward_chosen - reward_rejected)).mean()
             losses[k] = loss.item()
         return losses.mean()
 
@@ -382,7 +382,7 @@ def train_reward_model(config):
         # evaluate the loss
         reward_chosen = model(batch.chosen)
         reward_rejected = model(batch.rejected)
-        loss = -torch.log(torch.sigmoid(reward_chosen.reward - reward_rejected.reward)).mean()
+        loss = -torch.log(torch.sigmoid(reward_chosen - reward_rejected)).mean()
         
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
