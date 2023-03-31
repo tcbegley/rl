@@ -1,5 +1,4 @@
 import os
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -150,7 +149,7 @@ def train_reward_model(config):
             # fix the keys of the state dictionary :(
             # honestly no idea how checkpoints sometimes get this prefix, have to debug more
             unwanted_prefix = "_orig_mod."
-            for k, v in list(state_dict.items()):
+            for k in state_dict:
                 if k.startswith(unwanted_prefix):
                     state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
             model.load_state_dict(state_dict)
@@ -173,7 +172,6 @@ def train_reward_model(config):
         model = DDP(model, device_ids=[config["ddp_local_rank"]])
 
     # training loop
-    t0 = time.time()
     local_iter_num = 0  # number of iterations in the lifetime of this process
     config["running_mfu"] = -1.0
     raw_model = (
@@ -241,10 +239,6 @@ def train_reward_model(config):
         loss.backward()
         optimizer.step()
 
-        # timing and logging
-        t1 = time.time()
-        # dt = t1 - t0
-        t0 = t1
         iter_num += 1
         local_iter_num += 1
 
