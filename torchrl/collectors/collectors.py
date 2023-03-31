@@ -32,6 +32,7 @@ from torchrl._utils import (
     accept_remote_rref_udf_invocation,
     prod,
     VERBOSE,
+    RL_WARNINGS,
 )
 from torchrl.collectors.utils import split_trajectories
 from torchrl.data.tensor_specs import TensorSpec
@@ -540,9 +541,12 @@ class SyncDataCollector(DataCollectorBase):
         if total_frames is None or total_frames < 0:
             total_frames = float("inf")
         else:
-            if total_frames % frames_per_batch != 0:
-                raise ValueError(
-                    f"total_frames ({total_frames}) must be divisible by frames_per_batch ({frames_per_batch})."
+            remainder = total_frames % frames_per_batch
+            if remainder != 0 and RL_WARNINGS:
+                warnings.warn(
+                    f"total_frames ({total_frames}) is not exactly divisible by frames_per_batch ({frames_per_batch})."
+                    f"This means {frames_per_batch - remainder} additional frames will be collected."
+                    "To silence this message, set the environment variable RL_WARNINGS to False."
                 )
         self.total_frames = total_frames
         self.reset_at_each_iter = reset_at_each_iter
@@ -550,10 +554,11 @@ class SyncDataCollector(DataCollectorBase):
         self.postproc = postproc
         if self.postproc is not None:
             self.postproc.to(self.storing_device)
-        if frames_per_batch % self.n_env != 0:
+        if frames_per_batch % self.n_env != 0 and RL_WARNINGS:
             warnings.warn(
                 f"frames_per_batch {frames_per_batch} is not exactly divisible by the number of batched environments {self.n_env}, "
-                f" this results in more frames_per_batch per iteration that requested"
+                f" this results in more frames_per_batch per iteration that requested."
+                "To silence this message, set the environment variable RL_WARNINGS to False."
             )
         self.requested_frames_per_batch = frames_per_batch
         self.frames_per_batch = -(-frames_per_batch // self.n_env)
@@ -635,7 +640,7 @@ class SyncDataCollector(DataCollectorBase):
 
         Args:
             seed (int): integer representing the seed to be used for the environment.
-            static_seed(bool, optional): if True, the seed is not incremented.
+            static_seed(bool, optional): if ``True``, the seed is not incremented.
                 Defaults to False
 
         Returns:
@@ -1112,9 +1117,12 @@ class _MultiDataCollector(DataCollectorBase):
         if total_frames is None or total_frames < 0:
             total_frames = float("inf")
         else:
-            if total_frames % frames_per_batch != 0:
-                raise ValueError(
-                    f"total_frames ({total_frames}) must be divisible by frames_per_batch ({frames_per_batch})."
+            remainder = total_frames % frames_per_batch
+            if remainder != 0 and RL_WARNINGS:
+                warnings.warn(
+                    f"total_frames ({total_frames}) is not exactly divisible by frames_per_batch ({frames_per_batch})."
+                    f"This means {frames_per_batch - remainder} additional frames will be collected."
+                    "To silence this message, set the environment variable RL_WARNINGS to False."
                 )
         self.total_frames = total_frames
         self.reset_at_each_iter = reset_at_each_iter
@@ -1263,7 +1271,7 @@ also that the state dict is synchronised across processes if needed."""
 
         Args:
             seed: integer representing the seed to be used for the environment.
-            static_seed (bool, optional): if True, the seed is not incremented.
+            static_seed (bool, optional): if ``True``, the seed is not incremented.
                 Defaults to False
 
         Returns:
@@ -1469,10 +1477,11 @@ class MultiSyncDataCollector(_MultiDataCollector):
 
     @property
     def frames_per_batch_worker(self):
-        if self.requested_frames_per_batch % self.num_workers != 0:
+        if self.requested_frames_per_batch % self.num_workers != 0 and RL_WARNINGS:
             warnings.warn(
                 f"frames_per_batch {self.requested_frames_per_batch} is not exactly divisible by the number of collector workers {self.num_workers},"
-                f" this results in more frames_per_batch per iteration that requested"
+                f" this results in more frames_per_batch per iteration that requested."
+                "To silence this message, set the environment variable RL_WARNINGS to False."
             )
         frames_per_batch_worker = -(
             -self.requested_frames_per_batch // self.num_workers
@@ -1840,7 +1849,7 @@ class aSyncDataCollector(MultiaSyncDataCollector):
             the output TensorDict will be stored. For long trajectories,
             it may be necessary to store the data on a different.
             device than the one where the policy is stored. Default is None.
-        update_at_each_batch (bool): if True, the policy weights will be updated every time a batch of trajectories
+        update_at_each_batch (bool): if ``True``, the policy weights will be updated every time a batch of trajectories
             is collected.
             default=False
 
