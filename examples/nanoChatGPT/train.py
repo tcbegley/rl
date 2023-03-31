@@ -261,12 +261,18 @@ def create_lr_scheduler(config):
 
 
 def train(
-    model, model_kwargs, optimizer, train_data, val_data, config, master_process=True
+    model,
+    model_kwargs,
+    optimizer,
+    train_data,
+    val_data,
+    config,
+    master_process=True,
+    ddp=False,
 ):
     # these will already have been set if resuming from previous checkpoint
     iter_num = config.setdefault("iter_num", 0)
     best_val_loss = config.setdefault("best_val_loss", 1e9)
-    ddp = isinstance(model, DDP)
 
     if config["decay_lr"]:
         lr_scheduler = create_lr_scheduler(config)
@@ -418,6 +424,7 @@ if __name__ == "__main__":
         val_data,
         config,
         master_process=ddp_config["master_process"],
+        ddp=ddp_config["is_ddp"],
     )
 
     if ddp_config["is_ddp"]:
