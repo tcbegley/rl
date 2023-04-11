@@ -156,7 +156,6 @@ class RLHF(nn.Module):
                             delta + gamma * lam * advantages_all[:, t + 1]
                         )
                         # returns_all[:, t] += gamma * returns_all[:, t + 1]
-
         return (
             idx,
             log_probs[:, -max_new_tokens:],

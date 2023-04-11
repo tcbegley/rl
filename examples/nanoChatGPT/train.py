@@ -24,12 +24,6 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn as nn
-from tensordict.nn import TensorDictModule
-from tensordict.prototype import tensorclass
-from torch.distributed import destroy_process_group
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import Dataset
-from utils import init_ddp, load_and_update_config
 
 from shared import (
     create_infinite_dataloader,
@@ -38,6 +32,12 @@ from shared import (
     load_checkpoint,
     setup,
 )
+from tensordict.nn import TensorDictModule
+from tensordict.prototype import tensorclass
+from torch.distributed import destroy_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import Dataset
+from utils import init_ddp, load_and_update_config
 
 HERE = Path(__file__).parent
 
@@ -141,6 +141,9 @@ def create_loss_estimator(config):
 
 
 def train(config):
+    # TODO: clean up...train should do just the training.
+    # model creation, data loading etc. should be performed outside
+    # plus align all script to have same structure and order of calls
     model, model_kwargs = init_model(config)
     model.to(config["device"])
     scaler = init_scaler(config)
