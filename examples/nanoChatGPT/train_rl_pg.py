@@ -174,7 +174,7 @@ def train(config):
         actor_loss.backward()
         actor_optimizer.step()
 
-        torch.mean(rewards)
+        # torch.mean(rewards)  # FIXME: why this was here?
 
         rews_all.append(rewards.mean().detach().cpu().numpy())
         eval_interval = config["eval_interval"]
