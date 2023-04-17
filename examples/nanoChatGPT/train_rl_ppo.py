@@ -252,6 +252,7 @@ def train(config):
 
     # MODEL TO DEVICE
     reward_model.to(config["device"])
+    a2c_model.to(config["device"])
 
     # rl_model.to(config["device"])
 
@@ -269,9 +270,9 @@ def train(config):
 
     t0 = time.time()
     for iter in range(max_iters):
-
         # TODO: make this random?
         batch = next(train_loader)  # fetch the first batch 
+
         idx = batch.prompt
         print("X", idx.shape)
         # idx is (B, T) array of indices in the current context
@@ -292,14 +293,10 @@ def train(config):
             print("ACTOR", actor.out_keys, x.shape, logits.shape, action.shape)
             x, state_value = critic(idx_cond)
             print("CRITIC", critic.out_keys, x.shape, state_value.shape)
-            exit()
             # focus only on the last time step
-            logits = logits[:, -1, :]  # becomes (B, C)
-            # apply softmax to get probabilities
-
-            probs_next = F.softmax(logits, dim=-1)  # (B, C)
-            # sample from the distribution
-            idx_next = torch.multinomial(probs_next, num_samples=1)  # (B, 1)
+            action = action[:, -1]  # becomes (B, C)
+            state_value = state_value[:, -1, :]
+            
 
             probs_idx_next = torch.gather(probs_next, 1, idx_next)
             log_probs_idx_next = torch.log(probs_idx_next)
