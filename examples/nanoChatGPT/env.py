@@ -8,7 +8,12 @@ from tensordict.nn import TensorDictModule
 from tensordict.tensordict import TensorDict, TensorDictBase
 from torch import nn
 
-from torchrl.data import BoundedTensorSpec, CompositeSpec, UnboundedContinuousTensorSpec, UnboundedDiscreteTensorSpec
+from torchrl.data import (
+    BoundedTensorSpec,
+    CompositeSpec,
+    UnboundedContinuousTensorSpec,
+    UnboundedDiscreteTensorSpec,
+)
 from torchrl.envs import (
     CatTensors,
     EnvBase,
@@ -40,7 +45,11 @@ from shared import (
     load_checkpoint,
     setup,
 )
-from tensordict.nn import TensorDictModule, TensorDictSequential, ProbabilisticTensorDictModule
+from tensordict.nn import (
+    TensorDictModule,
+    TensorDictSequential,
+    ProbabilisticTensorDictModule,
+)
 from tensordict.nn.distributions import NormalParamExtractor
 from tensordict.prototype import tensorclass
 from torch import nn
@@ -123,9 +132,6 @@ def get_dataloaders(config):
     return train_loader, val_loader
 
 
-
-
-
 def _step(self, tensordict):
     prompt = tensordict["prompt"]
     generated = tensordict["generated"]
@@ -133,9 +139,9 @@ def _step(self, tensordict):
     # perform the action
     action = tensordict["action"].squeeze(-1)
 
-    # compute the reward 
+    # compute the reward
     if generated.shape[-1] >= self.config["episode_length"]:
-        status = torch.cat(prompt, generated)[:, -self.config["block_size"]:]
+        status = torch.cat(prompt, generated)[:, -self.config["block_size"] :]
         reward = self.reward_model(status)
         done = torch.ones_like(reward, dtype=torch.bool)
         raise RuntimeError("aaa")
@@ -165,6 +171,7 @@ def _step(self, tensordict):
     print(out["next"]["generated"].shape)
     return out
 
+
 def _reset(self, tensordict):
     if tensordict is None or tensordict.is_empty():
         # if no tensordict is passed, we generate a single set of hyperparameters
@@ -172,17 +179,19 @@ def _reset(self, tensordict):
         # parameters to get started.
         tensordict = TensorDict({}, batch_size=self.config["batch_size"])
 
-    batch = next(self.dataloader) 
+    batch = next(self.dataloader)
 
     out = TensorDict(
-            {
-                "prompt": batch.prompt,
-                "generated": torch.zeros((*batch.prompt.shape[:-1], 0), dtype=batch.prompt.dtype),
-            }
-        ,
+        {
+            "prompt": batch.prompt,
+            "generated": torch.zeros(
+                (*batch.prompt.shape[:-1], 0), dtype=batch.prompt.dtype
+            ),
+        },
         tensordict.shape,
     )
     return out
+
 
 def _make_spec(self, tensordict):
     # Under the hood, this will populate self.output_spec["observation"]
@@ -207,6 +216,7 @@ def _make_spec(self, tensordict):
     )
     self.reward_spec = UnboundedContinuousTensorSpec(shape=(*tensordict.shape, 1))
 
+
 def _set_seed(self, seed: Optional[int]):
     rng = torch.manual_seed(seed)
     self.rng = rng
@@ -215,14 +225,16 @@ def _set_seed(self, seed: Optional[int]):
 class RLHFEnv(EnvBase):
     batch_locked = False
 
-    def __init__(self, reward_model=None, config=None, dataloader=None, td_params=None, seed=None, device="cpu"):
+    def __init__(self, reward_model=None, config=None, dataloader=None, seed=None):
         # if td_params is None:
         #     td_params = self.gen_params()
+        super().__init__(
+            device=config["device"], batch_size=[config["batch_size"]]
+        )
 
         self.reward_model = reward_model
         self.config = config
         self.dataloader = dataloader
-        super().__init__(device=device, batch_size=[])
         # self._make_spec(td_params)
         if seed is None:
             seed = torch.empty((), dtype=torch.int64).random_().item()
@@ -238,25 +250,31 @@ class RLHFEnv(EnvBase):
     _set_seed = _set_seed
 
 
-if __name__ == "__main__":
+def main():
     config = load_and_update_config("config/train_rl.yaml")
     config.update(init_ddp(config["backend"], config["device"]))
     train_loader, val_loader = get_dataloaders(config)
     env = RLHFEnv(dataloader=train_loader, config=config)
-    
+
     td = env.reset()
+
     def get_action(td):
         print("AAA", td)
-        td["action"] = torch.randint(1,1000,td.shape)
+        td["action"] = torch.randint(1, 1000, td.shape)
         return td
-    
-    env.rollout(3, get_action)
+
+    # env.rollout(3, get_action, return_contiguous=False)
     print(td.shape)
     print(td)
     print(env.batch_size)
     for i in range(3):
-        td["action"] = torch.randint(1,1000,td.shape)
+        # td = get_action(td)
+        td["action"] = torch.randint(1, 1000, td.shape)
         td = env.step(td)
         print("random step tensordict", i, td["action"], td["next"]["generated"])
         td = step_mdp(td)
     print(list(td.keys(True)))
+
+
+if __name__ == "__main__":
+    main()

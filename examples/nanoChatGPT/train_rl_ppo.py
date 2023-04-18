@@ -17,7 +17,11 @@ from shared import (
     load_checkpoint,
     setup,
 )
-from tensordict.nn import TensorDictModule, TensorDictSequential, ProbabilisticTensorDictModule
+from tensordict.nn import (
+    TensorDictModule,
+    TensorDictSequential,
+    ProbabilisticTensorDictModule,
+)
 from tensordict.nn.distributions import NormalParamExtractor
 from tensordict.prototype import tensorclass
 from torch import nn
@@ -32,6 +36,8 @@ from torchrl.modules import ProbabilisticActor, ActorValueOperator
 from torchrl.objectives import ClipPPOLoss
 from torchrl.objectives.value import GAE
 from torch.distributions.categorical import Categorical
+
+from env import RLHFEnv
 
 HERE = Path(__file__).parent
 
@@ -117,11 +123,17 @@ class ActorCritic(ActorValueOperator):
         common = TensorDictModule(base_model, in_keys=["prompt"], out_keys=["x"])
 
         actor_head = TensorDictModule(actor_head, in_keys=["x"], out_keys=["logits"])
-        actor_head = TensorDictSequential(actor_head, ProbabilisticTensorDictModule(in_keys=["logits"], out_keys=["action"], distribution_class=Categorical))
-        value_head = TensorDictModule(value_head, in_keys=["x"], out_keys=["state_value"])
-        
-        super().__init__(common, actor_head, value_head)
+        actor_head = TensorDictSequential(
+            actor_head,
+            ProbabilisticTensorDictModule(
+                in_keys=["logits"], out_keys=["action"], distribution_class=Categorical
+            ),
+        )
+        value_head = TensorDictModule(
+            value_head, in_keys=["x"], out_keys=["state_value"]
+        )
 
+        super().__init__(common, actor_head, value_head)
 
     # def forward(self, x, targets=None):
     #     x = self.model(x)
@@ -137,7 +149,6 @@ class ActorCritic(ActorValueOperator):
     #     # 1. a list with the probability of each action over the action space
     #     # 2. the value from state s_t
     #     return action_prob, state_values
-
 
     # REWRITE OR REMOVE?!?!
     def generate(
@@ -248,7 +259,9 @@ def train(config):
 
     # model init: Reward
     reward_model = RLHF(model_base, "reward", discrete_reward=config["discrete_reward"])
-    reward_model = TensorDictModule(reward_model, in_keys=["input"], out_keys=["reward"])
+    reward_model = TensorDictModule(
+        reward_model, in_keys=["input"], out_keys=["reward"]
+    )
 
     # MODEL TO DEVICE
     reward_model.to(config["device"])
@@ -256,102 +269,55 @@ def train(config):
 
     # rl_model.to(config["device"])
 
-    actor_optimizer = torch.optim.AdamW(actor.parameters(), lr=1e-3)
-    critic_optimizer = torch.optim.AdamW(critic.parameters(), lr=1e-3)
-
+    # critic_optimizer = torch.optim.AdamW(critic.parameters(), lr=1e-3)
 
     adv_fn = GAE(value_network=critic, gamma=0.99, lmbda=0.95, average_gae=True)
     loss_fn = ClipPPOLoss(actor, critic, gamma=0.99)
 
+    optimizer = torch.optim.AdamW(loss_fn.parameters(), lr=1e-3)
+
     train_loader, val_loader = get_dataloaders(config)
     last_time = time.time()
     rews_all = []
-    max_iters = 100000
+    max_iters = 100_000
 
     t0 = time.time()
-    for iter in range(max_iters):
-        # TODO: make this random?
-        batch = next(train_loader)  # fetch the first batch 
+    env = RLHFEnv(reward_model=reward_model, config=config, dataloader=train_loader)
 
-        idx = batch.prompt
-        print("X", idx.shape)
-        # idx is (B, T) array of indices in the current context
-        log_probs = torch.tensor([]).to(config["device"])
+    def get_action(td):
+        import ipdb; ipdb.set_trace()
+        prompt = torch.cat((td["prompt"], td["generated"]), dim=-1)[
+            :, -config["block_size"] :
+        ]
+        _, _, td["action"] = actor(prompt)
+        return td
 
-        values_all = torch.zeros((idx.shape[0], config["episode_length"])).to(config["device"])
-        advantages_all = torch.zeros((idx.shape[0], config["episode_length"])).to(config["device"])
-
-        gamma = 1
-        lam = 1
-
-        for i in range(config["episode_length"]):
-            # crop idx to the last block_size tokens
-            # block_size = 256
-            idx_cond = idx[:, -config["block_size"]:]
-            print("X2", idx.shape)
-            x, logits, action = actor(idx_cond)
-            print("ACTOR", actor.out_keys, x.shape, logits.shape, action.shape)
-            x, state_value = critic(idx_cond)
-            print("CRITIC", critic.out_keys, x.shape, state_value.shape)
-            # focus only on the last time step
-            action = action[:, -1]  # becomes (B, C)
-            state_value = state_value[:, -1, :]
-            
-
-            probs_idx_next = torch.gather(probs_next, 1, idx_next)
-            log_probs_idx_next = torch.log(probs_idx_next)
-            log_probs = torch.cat((log_probs, log_probs_idx_next), dim=1)
-
-            # append sampled index to the running sequence
-            idx = torch.cat((idx, idx_next), dim=1)  # (B, T+1)
-
-            if i == config["episode_length"] - 1:
-                states = idx[:, -config["episode_length"]:]
-                rewards = reward_model(torch.tensor(states))
-                
-
-                # TODO: HOW TRANSLATE THIS?
-                for t in reversed(range(config["episode_length"])):
-                    if t == config["episode_length"] - 1:
-                        # value at last state is 0
-                        delta = rewards[:].squeeze() - values_all[:, t]
-                        advantages_all[:, t] = delta
-                        # returns_all[:, t] = rewards[:]
-                    else:
-                        # rewards can only be non-zero at the last state
-                        delta = gamma * values_all[:, t + 1] - values_all[:, t]
-                        advantages_all[:, t] = (
-                            delta + gamma * lam * advantages_all[:, t + 1]
-                        )
-                        # returns_all[:, t] += gamma * returns_all[:, t + 1]
-
-        ########################################
+    def get_values(td):
+        prompt = torch.cat((td["prompt"], td["generated"]), dim=-1)[
+            :, -config["block_size"] :
+        ]
 
 
+    for i in range(max_iters):
+        td = env.rollout(
+            config["episode_length"], policy=get_action, return_contiguous=False
+        )
+        adv_fn(td)
 
-
-
-
-
-
-
-        # minus KL divergence
-        rets = (
-            advantages * log_probs.squeeze()
-        )  # - 1*(log_probs-log_probs_reference) #- 0.05*log_probs
-        actor_loss = -rets.sum()
-        actor_optimizer.zero_grad(set_to_none=True)
-        actor_loss.backward()
-        actor_optimizer.step()
-
-
-        # TODO ADD EVALUATION...
+        loss_vals = loss_fn(td)
+        loss_val = sum(
+            value for key, value in loss_vals.items() if key.startswith("loss")
+        )
+        loss_val.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+        print(f"Iteration {i}: {loss_val=}")
 
 
 PPO_CONFIG = {
     # cardinality of the sub-samples gathered from the current data in the inner loop
     "sub_batch_size": 64,
-    # optimisation steps per batch of data collected  
+    # optimisation steps per batch of data collected
     "num_epochs": 10,
     # clip value for PPO loss: see the equation in the intro for more context.
     "clip_epsilon": (0.2),
@@ -360,7 +326,8 @@ PPO_CONFIG = {
     "entropy_eps": 1e-4,
 }
 
-if __name__ == "__main__":
+
+def main():
     config = load_and_update_config("config/train_rl.yaml")
     config.update(init_ddp(config["backend"], config["device"]))
     config["ppo"] = PPO_CONFIG
@@ -370,3 +337,7 @@ if __name__ == "__main__":
 
     if config["is_ddp"]:
         destroy_process_group()
+
+
+if __name__ == "__main__":
+    main()
