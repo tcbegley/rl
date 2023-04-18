@@ -1,3 +1,4 @@
+import copy
 import os
 import time
 from collections import defaultdict
@@ -8,7 +9,9 @@ import numpy as np
 import tiktoken
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from datasets import load_dataset
+from env import RLHFEnv
 from model import RLHF
 from shared import (
     create_infinite_dataloader,
@@ -18,26 +21,29 @@ from shared import (
     setup,
 )
 from tensordict.nn import (
-    TensorDictModule,
-    TensorDictSequential,
     ProbabilisticTensorDictModule,
+    ProbabilisticTensorDictSequential,
+    TensorDictModule,
+    set_skip_existing,
 )
 from tensordict.nn.distributions import NormalParamExtractor
 from tensordict.prototype import tensorclass
 from torch import nn
 from torch.distributed import destroy_process_group
+from torch.distributions.categorical import Categorical
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from utils import init_ddp, load_and_update_config
-import torch.nn.functional as F
-import copy
-from torchrl.modules import ProbabilisticActor, ActorValueOperator
-from torchrl.objectives import ClipPPOLoss
-from torchrl.objectives.value import GAE
-from torch.distributions.categorical import Categorical
 
-from env import RLHFEnv
+from torchrl.modules import (
+    ActorValueOperator,
+    ProbabilisticActor,
+    SafeProbabilisticTensorDictSequential,
+    SafeProbabilisticModule,
+)
+from torchrl.objectives import ClipPPOLoss, hold_out_net
+from torchrl.objectives.value import GAE
 
 HERE = Path(__file__).parent
 
@@ -123,10 +129,13 @@ class ActorCritic(ActorValueOperator):
         common = TensorDictModule(base_model, in_keys=["prompt"], out_keys=["x"])
 
         actor_head = TensorDictModule(actor_head, in_keys=["x"], out_keys=["logits"])
-        actor_head = TensorDictSequential(
+        actor_head = SafeProbabilisticTensorDictSequential(
             actor_head,
-            ProbabilisticTensorDictModule(
-                in_keys=["logits"], out_keys=["action"], distribution_class=Categorical
+            SafeProbabilisticModule(
+                in_keys=["logits"],
+                out_keys=["action"],
+                distribution_class=Categorical,
+                return_log_prob=True,
             ),
         )
         value_head = TensorDictModule(
@@ -288,7 +297,9 @@ def train(config):
         prompt = torch.cat((td["prompt"], td["generated"]), dim=-1)[
             :, -config["block_size"] :
         ]
-        _, _, td["action"] = actor(prompt)
+        td["x"], td["state_value"] = critic(prompt)
+        _, _, td["action"], td["sample_log_prob"] = actor(prompt)
+        td["sample_log_prob"] = td["sample_log_prob"].detach()
         return td
 
     def get_values(td):
@@ -296,14 +307,15 @@ def train(config):
             :, -config["block_size"] :
         ]
 
-
     for i in range(max_iters):
         td = env.rollout(
             config["episode_length"], policy=get_action, return_contiguous=False
         )
-        adv_fn(td)
 
-        loss_vals = loss_fn(td)
+        with set_skip_existing(True):
+            adv_fn(td)
+            loss_vals = loss_fn(td)
+
         loss_val = sum(
             value for key, value in loss_vals.items() if key.startswith("loss")
         )

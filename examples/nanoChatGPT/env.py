@@ -142,21 +142,16 @@ def _step(self, tensordict):
     # compute the reward
     if generated.shape[-1] >= self.config["episode_length"]:
         status = torch.cat(prompt, generated)[:, -self.config["block_size"] :]
-        reward = self.reward_model(status)
+        reward = self.reward_model(status).unsqueeze(-1)
         done = torch.ones_like(reward, dtype=torch.bool)
         raise RuntimeError("aaa")
     else:
         print("Here", tensordict.batch_size)
-        reward = torch.zeros(tensordict.batch_size)
+        reward = torch.zeros((*tensordict.batch_size, 1))
         done = torch.zeros_like(reward, dtype=torch.bool)
 
     # The output must be written in a ``"next"`` entry
-    print(generated.shape, action.shape)
     next_gen = torch.hstack((generated, action[..., None]))
-    print(next_gen.shape)
-    print(done.shape)
-    print(prompt.shape)
-    print(reward.shape)
     out = TensorDict(
         {
             "next": {
@@ -168,7 +163,6 @@ def _step(self, tensordict):
         },
         tensordict.shape,
     )
-    print(out["next"]["generated"].shape)
     return out
 
 
@@ -187,34 +181,41 @@ def _reset(self, tensordict):
             "generated": torch.zeros(
                 (*batch.prompt.shape[:-1], 0), dtype=batch.prompt.dtype
             ),
+            "done": torch.zeros((*batch.prompt.shape[:-1], 1, 1), dtype=torch.bool),
+            "reward": torch.zeros(
+                (*batch.prompt.shape[:-1], 1, 1), dtype=torch.float32
+            ),
         },
         tensordict.shape,
     )
     return out
 
 
-def _make_spec(self, tensordict):
+def _make_spec(self):
     # Under the hood, this will populate self.output_spec["observation"]
     self.observation_spec = CompositeSpec(
         prompt=UnboundedDiscreteTensorSpec(
-            shape=(),
+            shape=(self.config["batch_size"],),
             dtype=torch.int64,
         ),
         generated=UnboundedDiscreteTensorSpec(
-            shape=(),
+            shape=(self.config["batch_size"],),
             dtype=torch.int64,
         ),
-        shape=(),
+        shape=(self.config["batch_size"],),
     )
     # since the environment is stateless, we expect the previous output as input
     self.input_spec = self.observation_spec.clone()
     # action-spec will be automatically wrapped in input_spec, but the convenient
     # self.action_spec = spec is supported
     self.action_spec = UnboundedDiscreteTensorSpec(
-        shape=(*tensordict.shape, 1),
+        shape=(self.config["batch_size"], 1),
         dtype=torch.int64,
     )
-    self.reward_spec = UnboundedContinuousTensorSpec(shape=(*tensordict.shape, 1))
+    self.reward_spec = UnboundedContinuousTensorSpec(
+        shape=(self.config["batch_size"], 1, 1)
+    )
+    self.done_spec = self.reward_spec.clone()
 
 
 def _set_seed(self, seed: Optional[int]):
@@ -228,21 +229,19 @@ class RLHFEnv(EnvBase):
     def __init__(self, reward_model=None, config=None, dataloader=None, seed=None):
         # if td_params is None:
         #     td_params = self.gen_params()
-        super().__init__(
-            device=config["device"], batch_size=[config["batch_size"]]
-        )
+        super().__init__(device=config["device"], batch_size=[config["batch_size"]])
 
         self.reward_model = reward_model
         self.config = config
         self.dataloader = dataloader
-        # self._make_spec(td_params)
+        self._make_spec()
         if seed is None:
             seed = torch.empty((), dtype=torch.int64).random_().item()
         # self.set_seed(seed)
 
     # Helpers: _make_step and gen_params
     # gen_params = staticmethod(gen_params)
-    # _make_spec = _make_spec
+    _make_spec = _make_spec
 
     # Mandatory methods: _step, _reset and _set_seed
     _reset = _reset
