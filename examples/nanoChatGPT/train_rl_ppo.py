@@ -285,7 +285,6 @@ def train(config):
     env = RLHFEnv(reward_model=reward_model, config=config, dataloader=train_loader)
 
     def get_action(td):
-        import ipdb; ipdb.set_trace()
         prompt = torch.cat((td["prompt"], td["generated"]), dim=-1)[
             :, -config["block_size"] :
         ]
