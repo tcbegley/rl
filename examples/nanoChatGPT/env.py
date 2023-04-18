@@ -26,6 +26,7 @@ from torchrl.envs.utils import check_env_specs, step_mdp
 
 DEFAULT_X = np.pi
 DEFAULT_Y = 1.0
+import copy
 import os
 import time
 from collections import defaultdict
@@ -36,6 +37,7 @@ import numpy as np
 import tiktoken
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from datasets import load_dataset
 from model import RLHF
 from shared import (
@@ -46,24 +48,22 @@ from shared import (
     setup,
 )
 from tensordict.nn import (
+    ProbabilisticTensorDictModule,
     TensorDictModule,
     TensorDictSequential,
-    ProbabilisticTensorDictModule,
 )
 from tensordict.nn.distributions import NormalParamExtractor
 from tensordict.prototype import tensorclass
 from torch import nn
 from torch.distributed import destroy_process_group
+from torch.distributions.categorical import Categorical
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset
-from tqdm import tqdm
-from utils import init_ddp, load_and_update_config
-import torch.nn.functional as F
-import copy
-from torchrl.modules import ProbabilisticActor, ActorValueOperator
+from torchrl.modules import ActorValueOperator, ProbabilisticActor
 from torchrl.objectives import ClipPPOLoss
 from torchrl.objectives.value import GAE
-from torch.distributions.categorical import Categorical
+from tqdm import tqdm
+from utils import init_ddp, load_and_update_config
 
 HERE = Path(__file__).parent
 
