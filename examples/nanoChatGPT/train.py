@@ -149,18 +149,17 @@ def train(config):
     scaler = init_scaler(config)
     optimizer = init_optimizer(model, config)
 
+    # compile the model
+    if config["compile"]:
+        print("compiling the model... (takes a ~minute)")
+        model = torch.compile(model)  # requires PyTorch 2.0
+
     model = TensorDictModule(
         model, in_keys=["prompt", "target"], out_keys=["logits", "loss"]
     )
 
-    # compile the model
-    if config["compile"]:
-        print("compiling the model... (takes a ~minute)")
-
-        model = torch.compile(model)  # requires PyTorch 2.0
     if config["is_ddp"]:
         model = DDP(model, device_ids=[config["ddp_local_rank"]])
-
     # these will already have been set if resuming from previous checkpoint
     iter_num = config.setdefault("iter_num", 0)
     best_val_loss = config.setdefault("best_val_loss", 1e9)
