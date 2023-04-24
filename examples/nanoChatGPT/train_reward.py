@@ -5,6 +5,7 @@ from typing import Optional
 import tiktoken
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from datasets import load_dataset
 from model import RLHF
 
@@ -69,8 +70,12 @@ class PairwiseDataset:
                 continue
 
             data[i] = cls(
-                chosen=torch.Tensor(chosen),
-                rejected=torch.Tensor(rejected),
+                chosen=F.pad(
+                    torch.Tensor(chosen), (max_length - len(chosen), 0), value=0
+                ),
+                rejected=F.pad(
+                    torch.Tensor(rejected), (max_length - len(rejected), 0), value=0
+                ),
                 batch_size=[],
             )
             i += 1
