@@ -133,7 +133,6 @@ def get_dataloaders(config):
 
 
 def _step(self, tensordict):
-    prompt = tensordict["prompt"]
     generated = tensordict["generated"]
 
     # perform the action
@@ -141,8 +140,7 @@ def _step(self, tensordict):
 
     # compute the reward
     if generated.shape[-1] >= self.config["episode_length"]:
-        status = torch.cat(prompt, generated)[:, -self.config["block_size"] :]
-        reward = self.reward_model(status).unsqueeze(-1)
+        reward = self.reward_model(generated).unsqueeze(-1)
         done = torch.ones_like(reward, dtype=torch.bool)
     else:
         reward = torch.zeros((*tensordict.batch_size, 1))
@@ -153,10 +151,9 @@ def _step(self, tensordict):
     out = TensorDict(
         {
             "next": {
-                "prompt": prompt,
                 "generated": next_gen,
                 "reward": reward,
-                "done": done,
+                "done": done
             }
         },
         tensordict.shape,
@@ -175,10 +172,7 @@ def _reset(self, tensordict):
 
     out = TensorDict(
         {
-            "prompt": batch.prompt,
-            "generated": torch.zeros(
-                (*batch.prompt.shape[:-1], 0), dtype=batch.prompt.dtype
-            ),
+            "generated": batch.prompt[:, -self.config["block_size"]:],
             "done": torch.zeros((*batch.prompt.shape[:-1], 1, 1), dtype=torch.bool),
             "reward": torch.zeros(
                 (*batch.prompt.shape[:-1], 1, 1), dtype=torch.float32

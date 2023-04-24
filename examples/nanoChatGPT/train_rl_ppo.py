@@ -179,9 +179,7 @@ def train(config):
     env = RLHFEnv(reward_model=reward_model, config=config, dataloader=train_loader)
 
     def get_action(td):
-        prompt = torch.cat((td["prompt"], td["generated"]), dim=-1)[
-            :, -config["block_size"] :
-        ]
+        prompt = td["generated"]
         td["x"], td["state_value"] = critic(prompt)
         _, _, td["action"], td["sample_log_prob"] = actor(prompt)
         td["sample_log_prob"] = td["sample_log_prob"].detach()
