@@ -142,6 +142,10 @@ def train_reward_model(config):
 
     print("Config of model: ", model.config)
 
+    if not os.path.exists(config["out_dir_reward"]):
+        print(f"Create {config['out_dir_reward']}")
+        os.mkdir(config["out_dir_reward"])
+
     if config["init_multihead_from"] == "scratch":
         print("initializing multihead from scratch")
     else:
