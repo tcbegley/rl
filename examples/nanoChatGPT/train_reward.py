@@ -150,9 +150,9 @@ def train_reward_model(config):
         print("initializing multihead from scratch")
     else:
         if config["init_multihead_from"] == "resume":
-            print(f"Resuming training from {config['out_dir_multihead']}")
+            print(f"Resuming training from {config['out_dir_reward']}")
             # resume training from a checkpoint.
-            ckpt_path = os.path.join(config["out_dir_multihead"], "ckpt.pt")
+            ckpt_path = os.path.join(config["out_dir_reward"], "ckpt.pt")
             checkpoint = torch.load(ckpt_path, map_location=config["device"])
             state_dict = checkpoint["model"]
             # fix the keys of the state dictionary :(
