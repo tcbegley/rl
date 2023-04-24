@@ -1,4 +1,5 @@
 import copy
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -10,7 +11,7 @@ import torch.nn as nn
 from env import RLHFEnv
 from model import RLHF
 from shared import create_infinite_dataloader, init_model, setup
-from tensordict.nn import set_skip_existing, TensorDictModule
+from tensordict.nn import set_skip_existing, skip_existing, TensorDictModule
 from tensordict.prototype import tensorclass
 from torch import nn
 from torch.distributed import destroy_process_group
@@ -141,6 +142,22 @@ def train(config):
 
     # model init: Reward
     reward_model = RLHF(model_base, "reward", discrete_reward=config["discrete_reward"])
+
+    # TODO: update reward model weights here?
+    ckpt_path = os.path.join(config["out_dir_reward"], "ckpt.pt")
+    checkpoint = torch.load(ckpt_path, map_location=config["device"])
+    # TODO: put this in a shared function
+    state_dict = checkpoint["model"]
+    # fix the keys of the state dictionary :(
+    # honestly no idea how checkpoints sometimes get this prefix, have to debug more
+    unwanted_prefixes = ["_orig_mod."]
+    for unwanted_prefix in unwanted_prefixes:
+        for k in list(state_dict):
+            if k.startswith(unwanted_prefix):
+                state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
+
+    reward_model.load_state_dict(state_dict)
+
     reward_model = TensorDictModule(
         reward_model, in_keys=["input"], out_keys=["reward"]
     )

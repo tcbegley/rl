@@ -144,9 +144,7 @@ def _step(self, tensordict):
         status = torch.cat(prompt, generated)[:, -self.config["block_size"] :]
         reward = self.reward_model(status).unsqueeze(-1)
         done = torch.ones_like(reward, dtype=torch.bool)
-        raise RuntimeError("aaa")
     else:
-        print("Here", tensordict.batch_size)
         reward = torch.zeros((*tensordict.batch_size, 1))
         done = torch.zeros_like(reward, dtype=torch.bool)
 

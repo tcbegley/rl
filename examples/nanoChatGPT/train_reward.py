@@ -159,7 +159,7 @@ def train_reward_model(config):
             # honestly no idea how checkpoints sometimes get this prefix, have to debug more
             unwanted_prefixes = ["_orig_mod.", "model."]
             for unwanted_prefix in unwanted_prefixes:
-                for k in state_dict:
+                for k in list(state_dict):
                     if k.startswith(unwanted_prefix):
                         state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
             model.load_state_dict(state_dict)
