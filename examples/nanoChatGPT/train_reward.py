@@ -95,6 +95,8 @@ def create_datasets(config):
 
 def get_dataloaders(config):
     train_data, val_data = create_datasets(config)
+    train_data.memmap_()
+    val_data.memmap_()
 
     train_loader = create_infinite_dataloader(
         train_data, config, Collate(config["device"])
@@ -146,21 +148,21 @@ def train_reward_model(config):
             state_dict = checkpoint["model"]
             # fix the keys of the state dictionary :(
             # honestly no idea how checkpoints sometimes get this prefix, have to debug more
-            unwanted_prefix = "_orig_mod."
-            for k in state_dict:
-                if k.startswith(unwanted_prefix):
-                    state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
+            unwanted_prefixes = ["_orig_mod.", "model."]
+            for unwanted_prefix in unwanted_prefixes:
+                for k in state_dict:
+                    if k.startswith(unwanted_prefix):
+                        state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
             model.load_state_dict(state_dict)
 
     model.to(config["device"])
-
-    model = TensorDictModule(model, in_keys=["input"], out_keys=["reward"])
 
     # compile the model
     if config["compile"]:
         print("compiling the model... (takes a ~minute)")
         model = torch.compile(model)  # requires PyTorch 2.0
 
+    model = TensorDictModule(model, in_keys=["input"], out_keys=["reward"])
     # FIXME: which one?
     # optimizer = torch.optim.AdamW(model.model.reward_head.parameters(), lr=1e-3)
     optimizer = torch.optim.AdamW(model.model.parameters(), lr=1e-4)
@@ -218,8 +220,10 @@ def train_reward_model(config):
                         "best_val_loss": best_val_loss,
                         "config": config,
                     }
-                    print(f"saving checkpoint to {config['out_dir']}")
-                    torch.save(checkpoint, os.path.join(config["out_dir"], "ckpt.pt"))
+                    print(f"saving checkpoint to {config['out_dir_reward']}")
+                    torch.save(
+                        checkpoint, os.path.join(config["out_dir_reward"], "ckpt.pt")
+                    )
         if iter_num == 0 and config["eval_only"]:
             break
 
