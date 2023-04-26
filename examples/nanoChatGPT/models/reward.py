@@ -23,9 +23,29 @@ def init_reward_model(config):
         print(f"Resuming training from {config['out_dir_reward']}")
         checkpoint = load_checkpoint(out_dir, device=config["device"])
         state_dict = checkpoint["model"]
-        # fix the keys of the state dictionary :(
-        # honestly no idea how checkpoints sometimes get this prefix, have to debug more
         _remove_state_dict_prefixes(state_dict)
         model.load_state_dict(state_dict)
 
     return model, model_kwargs
+
+
+if __name__ == "__main__":
+    import tiktoken
+    import torch
+
+    # FIXME: this relative import breaks when running this file
+    # below code gives an example of usage but is not easily runnable
+    from .utils import load_and_update_config
+
+    enc = tiktoken.get_encoding("gpt2")
+
+    HERE = Path(__file__).parent
+    config = load_and_update_config(HERE.parent / "config" / "train_reward.yaml")
+    reward_model = init_reward_model(config)
+
+    prompt = enc.encode("this is a hard-coded prompt!")
+    # add singleton leading dimension to simulate batch dimension
+    prompt = torch.tensor(prompt)[None, :]
+
+    reward = reward_model.forward_reward(prompt)
+    print(reward)
