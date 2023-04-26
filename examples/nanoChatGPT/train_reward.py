@@ -13,7 +13,7 @@ HERE = Path(__file__).parent
 
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
-def create_loss_estimator(config):
+def create_loss_estimator(config, ctx):
     @torch.no_grad()
     def estimate_loss(model, dataloader):
         losses = torch.zeros(config["eval_iters"])
@@ -29,25 +29,13 @@ def create_loss_estimator(config):
     return estimate_loss
 
 
-def train_reward_model(config):
+def train_reward_model(model, model_kwargs, optimizer, config, ctx):
     # TODO: clean up...train should do just the training.
     # model creation, data loading etc. should be performed outside
     # plus align all script to have same structure and order of calls
 
     # GET DATA
     train_loader, val_loader = get_dataloaders(config)
-
-    model, model_kwargs = init_reward_model(config)
-
-    # compile the model
-    if config["compile"]:
-        print("compiling the model... (takes a ~minute)")
-        model = torch.compile(model)  # requires PyTorch 2.0
-
-    model = TensorDictModule(model, in_keys=["input"], out_keys=["reward"])
-    # FIXME: which one?
-    # optimizer = torch.optim.AdamW(model.model.reward_head.parameters(), lr=1e-3)
-    optimizer = torch.optim.AdamW(model.model.parameters(), lr=1e-4)
 
     # training loop
     local_iter_num = 0  # number of iterations in the lifetime of this process
@@ -58,7 +46,7 @@ def train_reward_model(config):
     iter_num = config.setdefault("iter_num", 0)
     best_val_loss = config.setdefault("best_val_loss", 1e9)
 
-    estimate_loss = create_loss_estimator(config)
+    estimate_loss = create_loss_estimator(config, ctx)
 
     if config["decay_lr"]:
         lr_scheduler = create_lr_scheduler(config)
@@ -125,8 +113,30 @@ def train_reward_model(config):
             break
 
 
-if __name__ == "__main__":
+def main():
     config = load_and_update_config("config/train_reward.yaml")
-
     ctx = setup(config)
-    train_reward_model(config)
+
+    model, model_kwargs = init_reward_model(config)
+
+    # compile the model
+    if config["compile"]:
+        print("compiling the model... (takes a ~minute)")
+        model = torch.compile(model)  # requires PyTorch 2.0
+
+    model = TensorDictModule(model, in_keys=["input"], out_keys=["reward"])
+    # FIXME: which one?
+    # optimizer = torch.optim.AdamW(model.model.reward_head.parameters(), lr=1e-3)
+    optimizer = torch.optim.AdamW(model.model.parameters(), lr=1e-4)
+
+    train_reward_model(
+        model=model,
+        model_kwargs=model_kwargs,
+        optimizer=optimizer,
+        config=config,
+        ctx=ctx,
+    )
+
+
+if __name__ == "__main__":
+    main()

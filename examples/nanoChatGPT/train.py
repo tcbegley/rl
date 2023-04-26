@@ -26,7 +26,7 @@ def init_scaler(config):
     return torch.cuda.amp.GradScaler(enabled=(config["dtype"] == "float16"))
 
 
-def create_loss_estimator(config):
+def create_loss_estimator(config, ctx):
     # helps estimate an arbitrarily accurate loss over either split using many batches
     @torch.no_grad()
     def estimate_loss(model, dataloader):
@@ -41,23 +41,10 @@ def create_loss_estimator(config):
     return estimate_loss
 
 
-def train(config):
-    # TODO: clean up...train should do just the training.
-    # model creation, data loading etc. should be performed outside
-    # plus align all script to have same structure and order of calls
-    model, model_kwargs = init_transformer(config)
-    scaler = init_scaler(config)
-    optimizer = init_optimizer(model, config)
+def train(model, model_kwargs, scaler, optimizer, config, ctx):
+    estimate_loss = create_loss_estimator(config, ctx)
 
-    # compile the model
-    if config["compile"]:
-        print("compiling the model... (takes a ~minute)")
-        model = torch.compile(model)  # requires PyTorch 2.0
-
-    model = TensorDictModule(
-        model, in_keys=["prompt", "target"], out_keys=["logits", "loss"]
-    )
-
+    train_loader, val_loader = get_dataloaders(config)
     # these will already have been set if resuming from previous checkpoint
     iter_num = config.setdefault("iter_num", 0)
     best_val_loss = config.setdefault("best_val_loss", 1e9)
@@ -68,10 +55,6 @@ def train(config):
 
         def lr_scheduler(_):
             return config["learning_rate"]
-
-    estimate_loss = create_loss_estimator(config)
-
-    train_loader, val_loader = get_dataloaders(config)
 
     # training loop
     next_batch = next(train_loader)  # fetch the very first batch
@@ -110,7 +93,9 @@ def train(config):
                     }
                     print(f"saving checkpoint to {config['out_dir']}")
                     torch.save(checkpoint, os.path.join(config["out_dir"], "ckpt.pt"))
+
         if iter_num == 0 and config["eval_only"]:
+            # in eval_only mode, break after evaluation metrics on first iteration
             break
 
         # forward backward update, with optional gradient accumulation to simulate larger batch size
@@ -159,8 +144,34 @@ def train(config):
             break
 
 
-if __name__ == "__main__":
+def main():
     config = load_and_update_config("config/train.yaml")
 
     ctx = setup(config)
-    train(config)
+
+    model, model_kwargs = init_transformer(config)
+    scaler = init_scaler(config)
+    optimizer = init_optimizer(model, config)
+
+    # compile the model
+    if config["compile"]:
+        print("compiling the model... (takes a ~minute)")
+        model = torch.compile(model)  # requires PyTorch 2.0
+
+    model = TensorDictModule(
+        model, in_keys=["prompt", "target"], out_keys=["logits", "loss"]
+    )
+
+    train(
+        model=model,
+        model_kwargs=model_kwargs,
+        scaler=scaler,
+        optimizer=optimizer,
+        config=config,
+        ctx=ctx,
+    )
+
+
+
+if __name__ == "__main__":
+    main()
