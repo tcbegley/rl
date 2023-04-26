@@ -1,10 +1,8 @@
 import pickle
 from pathlib import Path
 
-from nanoGPT import GPT, GPTConfig
-
-from utils import load_checkpoint, _remove_state_dict_prefixes
-
+from .nanoGPT import GPT, GPTConfig
+from .utils import _remove_state_dict_prefixes, load_checkpoint
 
 HERE = Path(__file__).parent
 

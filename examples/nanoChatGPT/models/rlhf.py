@@ -7,11 +7,9 @@ https://github.com/openai/gpt-2/blob/master/src/model.py
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
 """
 import copy
-import os
 
 import torch
 import torch.nn as nn
-from nanoGPT.model import GPT, GPTConfig
 from tensordict.nn import TensorDictModule
 from torch.distributions.categorical import Categorical
 from torch.nn import functional as F
@@ -22,8 +20,9 @@ from torchrl.modules import (
     SafeProbabilisticTensorDictSequential,
 )
 
+from .nanoGPT.model import GPT, GPTConfig
 from .transformer import init_transformer
-from .utils import load_checkpoint, _remove_state_dict_prefixes
+from .utils import _remove_state_dict_prefixes, load_checkpoint
 
 __all__ = ["GPT", "GPTConfig", "RLHF"]
 
