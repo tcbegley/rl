@@ -6,7 +6,6 @@ import torch
 def _remove_state_dict_prefixes(state_dict, unwanted_prefixes=("_orig_mod.", "model.")):
     # fix the keys of the state dictionary :(
     # honestly no idea how checkpoints sometimes get this prefix, have to debug more
-    unwanted_prefixes = ["_orig_mod.", "model."]
     for unwanted_prefix in unwanted_prefixes:
         for k in list(state_dict):
             if k.startswith(unwanted_prefix):
