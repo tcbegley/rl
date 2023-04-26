@@ -1,7 +1,7 @@
 import pickle
 from pathlib import Path
 
-from .nanoGPT import GPT, GPTConfig
+from .nanoGPT.model import GPT, GPTConfig
 from .utils import _remove_state_dict_prefixes, load_checkpoint
 
 HERE = Path(__file__).parent
@@ -33,7 +33,7 @@ def init_transformer_scratch(config, model_kwargs):
 def init_transformer_resume(config, model_kwargs):
     print(f"Resuming training from {config['out_dir']}")
     # resume training from a checkpoint.
-    checkpoint = load_checkpoint(config)
+    checkpoint = load_checkpoint(config["out_dir"], device=config["device"])
     checkpoint_model_kwargs = checkpoint["model_kwargs"]
     # force these config attributes to be equal otherwise we can't even resume training
     # the rest of the attributes (e.g. dropout) can stay as desired from command line

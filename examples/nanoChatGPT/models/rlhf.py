@@ -70,7 +70,7 @@ def init_rlhf_models(config):
     # TODO: update reward model weights here?
     checkpoint = load_checkpoint(config["out_dir_reward"], config["device"])
     state_dict = checkpoint["model"]
-    _remove_state_dict_prefixes(state_dict)
+    _remove_state_dict_prefixes(state_dict, unwanted_prefixes=["_orig_mod."])
 
     reward_model.load_state_dict(state_dict)
 

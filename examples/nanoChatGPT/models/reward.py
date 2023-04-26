@@ -1,19 +1,19 @@
 from pathlib import Path
 
-from .transformer import init_model
+from .transformer import init_transformer
 from .rlhf import RLHF
 from .utils import _remove_state_dict_prefixes, load_checkpoint
 
 
 def init_reward_model(config):
     # FIXME: Don't like this. include it into model
-    model, model_kwargs = init_model(config)
+    model, model_kwargs = init_transformer(config)
     model = RLHF(model, mode="reward", discrete_reward=False)
 
     print("Config of model: ", model.config)
     out_dir = Path(config["out_dir_reward"])
 
-    if not out_dir.exists(config["out_dir_reward"]):
+    if not out_dir.exists():
         print(f"Create {config['out_dir_reward']}")
         out_dir.mkdir()
 
