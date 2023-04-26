@@ -2,7 +2,8 @@ from pathlib import Path
 
 import torch
 from env import RLHFEnv
-from models.rlhf import init_rlhf_models
+from models.actor_critic import init_actor_critic
+from models.reward import init_reward_model
 from shared import setup
 from tensordict.nn import set_skip_existing
 from utils import load_and_update_config
@@ -19,13 +20,13 @@ def train(config):
     # TODO: clean up...train should do just the training.
     # model creation, data loading etc. should be performed outside
     # plus align all script to have same structure and order of calls
-    reward_model, a2c_model = init_rlhf_models(config)
+    a2c_model = init_actor_critic(config)
+    a2c_model.to(config["device"])
     actor = a2c_model.get_policy_operator()
     critic = a2c_model.get_value_operator()
 
-    # MODEL TO DEVICE
+    reward_model, _ = init_reward_model(config)
     reward_model.to(config["device"])
-    a2c_model.to(config["device"])
 
     adv_fn = GAE(value_network=critic, gamma=0.99, lmbda=0.95, average_gae=True)
     loss_fn = ClipPPOLoss(actor, critic, gamma=0.99)
@@ -33,7 +34,6 @@ def train(config):
     optimizer = torch.optim.AdamW(loss_fn.parameters(), lr=1e-3)
 
     train_loader, _ = get_dataloaders(config)
-    max_iters = 100_000
 
     env = RLHFEnv(reward_model=reward_model, config=config, dataloader=train_loader)
 
@@ -44,7 +44,7 @@ def train(config):
         td["sample_log_prob"] = td["sample_log_prob"].detach()
         return td
 
-    for i in range(max_iters):
+    for i in range(config["max_iters"]):
         td = env.rollout(
             config["episode_length"], policy=get_action, return_contiguous=False
         )

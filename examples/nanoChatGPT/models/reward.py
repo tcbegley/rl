@@ -1,14 +1,51 @@
+from copy import deepcopy
 from pathlib import Path
 
+import torch
+import torch.nn as nn
+
 from .transformer import init_transformer
-from .rlhf import RLHF
 from .utils import _remove_state_dict_prefixes, load_checkpoint
+
+
+class RewardModel(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = deepcopy(model)
+        self.config = model.config
+
+        self.n_embd = model.lm_head.in_features
+        self.block_size = model.config.block_size
+        self.model.reward_head = nn.Linear(
+            self.model.lm_head.in_features, 1, bias=False
+        )
+
+    def forward(self, idx):
+        device = idx.device
+        b, t = idx.size()
+        assert (
+            t <= self.config.block_size
+        ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        # shape (1, t)
+        pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0)
+
+        # forward the GPT model itself
+        # token embeddings of shape (b, t, n_embd)
+        tok_emb = self.model.transformer.wte(idx)
+        # position embeddings of shape (1, t, n_embd)
+        pos_emb = self.model.transformer.wpe(pos)
+        x = self.model.transformer.drop(tok_emb + pos_emb)
+        for block in self.model.transformer.h:
+            x = block(x)
+        x = self.model.transformer.ln_f(x)
+
+        return self.model.reward_head(x[:, -1, :])
 
 
 def init_reward_model(config):
     # FIXME: Don't like this. include it into model
     model, model_kwargs = init_transformer(config)
-    model = RLHF(model, mode="reward", discrete_reward=False)
+    model = RewardModel(model)
 
     print("Config of model: ", model.config)
     out_dir = Path(config["out_dir_reward"])
@@ -17,13 +54,13 @@ def init_reward_model(config):
         print(f"Create {config['out_dir_reward']}")
         out_dir.mkdir()
 
-    if config["init_multihead_from"] == "scratch":
-        print("initializing multihead from scratch")
-    elif config["init_multihead_from"] == "resume":
+    if config["init_reward_from"] == "scratch":
+        print("initializing reward from scratch")
+    elif config["init_reward_from"] == "resume":
         print(f"Resuming training from {config['out_dir_reward']}")
         checkpoint = load_checkpoint(out_dir, device=config["device"])
         state_dict = checkpoint["model"]
-        _remove_state_dict_prefixes(state_dict)
+        _remove_state_dict_prefixes(state_dict, unwanted_prefixes=["_orig_mod."])
         model.load_state_dict(state_dict)
 
     return model, model_kwargs
