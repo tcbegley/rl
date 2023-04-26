@@ -46,7 +46,6 @@ def train(config):
     # model creation, data loading etc. should be performed outside
     # plus align all script to have same structure and order of calls
     model, model_kwargs = init_transformer(config)
-    model.to(config["device"])
     scaler = init_scaler(config)
     optimizer = init_optimizer(model, config)
 

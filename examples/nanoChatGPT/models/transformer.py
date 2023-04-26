@@ -86,6 +86,7 @@ def init_transformer(config):
         # so that the checkpoint will have the right value
         model_kwargs["block_size"] = config["block_size"]
 
+    model.to(config["device"])
     return model, model_kwargs
 
 

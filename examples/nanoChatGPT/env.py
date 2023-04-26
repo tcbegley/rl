@@ -14,6 +14,7 @@ from torchrl.envs.utils import step_mdp
 from utils import load_and_update_config
 
 from data.shakespeare import get_dataloaders
+from models.reward import init_reward_model
 
 HERE = Path(__file__).parent
 
@@ -35,7 +36,7 @@ def _step(self, tensordict):
         done = torch.zeros_like(reward, dtype=torch.bool)
 
     # The output must be written in a ``"next"`` entry
-    next_gen = torch.hstack((generated, action[..., None]))
+    next_gen = torch.hstack((generated, action[..., None]))[:, -self.config["block_size"]:]
     out = TensorDict(
         {"next": {"generated": next_gen, "reward": reward, "done": done}},
         tensordict.shape,
@@ -125,26 +126,30 @@ class RLHFEnv(EnvBase):
 
 
 def main():
-    config = load_and_update_config("config/train_rl.yaml")
+    config = load_and_update_config("config/train_rlhf.yaml")
+    reward_model, _ = init_reward_model(config)
+    reward_model.to(config["device"])
     train_loader, _ = get_dataloaders(config)
-    env = RLHFEnv(dataloader=train_loader, config=config)
+    env = RLHFEnv(reward_model=reward_model, dataloader=train_loader, config=config)
 
     td = env.reset()
 
     def get_action(td):
-        print("AAA", td)
-        td["action"] = torch.randint(1, 1000, td.shape)
+        td["action"] = torch.randint(1, 1000, td.shape, device=config["device"])
         return td
 
-    # env.rollout(3, get_action, return_contiguous=False)
+    # rollout
+    env.rollout(3, get_action, return_contiguous=False)
+
     print(td.shape)
     print(td)
     print(env.batch_size)
+    # manual rollout
     for i in range(3):
         # td = get_action(td)
         td["action"] = torch.randint(1, 1000, td.shape)
         td = env.step(td)
-        print("random step tensordict", i, td["action"], td["next"]["generated"])
+        print("random step tensordict", i, td["action"], td["next", "generated"])
         td = step_mdp(td)
     print(list(td.keys(True)))
 

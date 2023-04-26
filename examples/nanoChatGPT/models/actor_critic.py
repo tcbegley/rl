@@ -50,4 +50,6 @@ class ActorCritic(ActorValueOperator):
 
 def init_actor_critic(config):
     model_base, _ = init_transformer(config)
-    return ActorCritic(model_base)
+    a2c_model = ActorCritic(model_base)
+    a2c_model.to(config["device"])
+    return a2c_model

@@ -21,12 +21,10 @@ def train(config):
     # model creation, data loading etc. should be performed outside
     # plus align all script to have same structure and order of calls
     a2c_model = init_actor_critic(config)
-    a2c_model.to(config["device"])
     actor = a2c_model.get_policy_operator()
     critic = a2c_model.get_value_operator()
 
     reward_model, _ = init_reward_model(config)
-    reward_model.to(config["device"])
 
     adv_fn = GAE(value_network=critic, gamma=0.99, lmbda=0.95, average_gae=True)
     loss_fn = ClipPPOLoss(actor, critic, gamma=0.99)

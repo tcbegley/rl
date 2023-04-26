@@ -70,8 +70,6 @@ class PairwiseDataset:
                 batch_size=[],
             )
             i += 1
-            if i >= 1000:
-                break
 
         # index because we will have skipped some datapoints
         return data[:i]

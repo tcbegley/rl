@@ -38,7 +38,6 @@ def train_reward_model(config):
     train_loader, val_loader = get_dataloaders(config)
 
     model, model_kwargs = init_reward_model(config)
-    model.to(config["device"])
 
     # compile the model
     if config["compile"]:

@@ -63,6 +63,7 @@ def init_reward_model(config):
         _remove_state_dict_prefixes(state_dict, unwanted_prefixes=["_orig_mod."])
         model.load_state_dict(state_dict)
 
+    model.to(config["device"])
     return model, model_kwargs
 
 
