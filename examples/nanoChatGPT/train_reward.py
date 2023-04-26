@@ -7,9 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from datasets import load_dataset
-from model import RLHF
-
-from shared import create_infinite_dataloader, create_lr_scheduler, init_model, setup
+from models.reward import init_reward_model
+from shared import create_infinite_dataloader, create_lr_scheduler, setup
 from tensordict.nn import TensorDictModule
 from tensordict.prototype import tensorclass
 from tqdm import tqdm
@@ -134,34 +133,7 @@ def train_reward_model(config):
     # GET DATA
     train_loader, val_loader = get_dataloaders(config)
 
-    # FIXME: Don't like this. include it into model
-    model, model_kwargs = init_model(config)
-    model = RLHF(model, mode="reward", discrete_reward=False)
-
-    print("Config of model: ", model.config)
-
-    if not os.path.exists(config["out_dir_reward"]):
-        print(f"Create {config['out_dir_reward']}")
-        os.mkdir(config["out_dir_reward"])
-
-    if config["init_multihead_from"] == "scratch":
-        print("initializing multihead from scratch")
-    else:
-        if config["init_multihead_from"] == "resume":
-            print(f"Resuming training from {config['out_dir_reward']}")
-            # resume training from a checkpoint.
-            ckpt_path = os.path.join(config["out_dir_reward"], "ckpt.pt")
-            checkpoint = torch.load(ckpt_path, map_location=config["device"])
-            state_dict = checkpoint["model"]
-            # fix the keys of the state dictionary :(
-            # honestly no idea how checkpoints sometimes get this prefix, have to debug more
-            unwanted_prefixes = ["_orig_mod.", "model."]
-            for unwanted_prefix in unwanted_prefixes:
-                for k in list(state_dict):
-                    if k.startswith(unwanted_prefix):
-                        state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
-            model.load_state_dict(state_dict)
-
+    model, model_kwargs = init_reward_model(config)
     model.to(config["device"])
 
     # compile the model

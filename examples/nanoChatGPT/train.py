@@ -14,16 +14,10 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn as nn
-
-from shared import (
-    create_infinite_dataloader,
-    create_lr_scheduler,
-    init_model,
-    load_checkpoint,
-    setup,
-)
+from models.transformer import init_optimizer, init_transformer
+from shared import create_infinite_dataloader, create_lr_scheduler, setup
+from tensordict import tensorclass
 from tensordict.nn import TensorDictModule
-from tensordict.prototype import tensorclass
 from torch.utils.data import Dataset
 from utils import load_and_update_config
 
@@ -99,20 +93,6 @@ def init_scaler(config):
     return torch.cuda.amp.GradScaler(enabled=(config["dtype"] == "float16"))
 
 
-def init_optimizer(model, config):
-    # optimizer
-    optimizer = model.configure_optimizers(
-        config["weight_decay"],
-        config["learning_rate"],
-        (config["beta1"], config["beta2"]),
-        "cuda" if "cuda" in config["device"] else "cpu",
-    )
-    if config["init_from"] == "resume":
-        checkpoint = load_checkpoint(config)
-        optimizer.load_state_dict(checkpoint["optimizer"])
-    return optimizer
-
-
 def create_loss_estimator(config):
     # helps estimate an arbitrarily accurate loss over either split using many batches
     @torch.no_grad()
@@ -132,7 +112,7 @@ def train(config):
     # TODO: clean up...train should do just the training.
     # model creation, data loading etc. should be performed outside
     # plus align all script to have same structure and order of calls
-    model, model_kwargs = init_model(config)
+    model, model_kwargs = init_transformer(config)
     model.to(config["device"])
     scaler = init_scaler(config)
     optimizer = init_optimizer(model, config)

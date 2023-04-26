@@ -1,5 +1,3 @@
-import copy
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -7,21 +5,15 @@ import numpy as np
 import torch
 import torch.nn as nn
 from env import RLHFEnv
-from model import RLHF
-from shared import create_infinite_dataloader, init_model, setup
-from tensordict.nn import set_skip_existing, TensorDictModule
-from tensordict.prototype import tensorclass
-from torch.distributions.categorical import Categorical
+from models.rlhf import init_rlhf_models
+from shared import create_infinite_dataloader, setup
+from tensordict import tensorclass
+from tensordict.nn import set_skip_existing
 from torch.utils.data import Dataset
+from utils import load_and_update_config
 
-from torchrl.modules import (
-    ActorValueOperator,
-    SafeProbabilisticModule,
-    SafeProbabilisticTensorDictSequential,
-)
 from torchrl.objectives import ClipPPOLoss
 from torchrl.objectives.value import GAE
-from utils import load_and_update_config
 
 HERE = Path(__file__).parent
 
@@ -90,72 +82,13 @@ def get_dataloaders(config):
     return train_loader, val_loader
 
 
-class ActorCritic(ActorValueOperator):
-    def __init__(self, base_model):
-
-        base_model = copy.deepcopy(base_model)
-        n_embd = base_model.lm_head.in_features
-
-        # actor network
-        # extract last layer to be reused by actor
-        actor_head = base_model.lm_head
-        base_model.lm_head = nn.Identity()
-
-        # critic network
-        value_head = nn.Linear(n_embd, 1, bias=False)
-
-        common = TensorDictModule(base_model, in_keys=["prompt"], out_keys=["x"])
-
-        actor_head = TensorDictModule(actor_head, in_keys=["x"], out_keys=["logits"])
-        actor_head = SafeProbabilisticTensorDictSequential(
-            actor_head,
-            SafeProbabilisticModule(
-                in_keys=["logits"],
-                out_keys=["action"],
-                distribution_class=Categorical,
-                return_log_prob=True,
-            ),
-        )
-        value_head = TensorDictModule(
-            value_head, in_keys=["x"], out_keys=["state_value"]
-        )
-
-        super().__init__(common, actor_head, value_head)
-
-
 def train(config):
     # TODO: clean up...train should do just the training.
     # model creation, data loading etc. should be performed outside
     # plus align all script to have same structure and order of calls
-
-    # model init: Actor Critic
-    # FIXME: Don't like this. include it into model
-    model_base, _ = init_model(config)
-    a2c_model = ActorCritic(model_base)
+    reward_model, a2c_model = init_rlhf_models(config)
     actor = a2c_model.get_policy_operator()
     critic = a2c_model.get_value_operator()
-
-    # model init: Reward
-    reward_model = RLHF(model_base, "reward", discrete_reward=config["discrete_reward"])
-
-    # TODO: update reward model weights here?
-    ckpt_path = os.path.join(config["out_dir_reward"], "ckpt.pt")
-    checkpoint = torch.load(ckpt_path, map_location=config["device"])
-    # TODO: put this in a shared function
-    state_dict = checkpoint["model"]
-    # fix the keys of the state dictionary :(
-    # honestly no idea how checkpoints sometimes get this prefix, have to debug more
-    unwanted_prefixes = ["_orig_mod."]
-    for unwanted_prefix in unwanted_prefixes:
-        for k in list(state_dict):
-            if k.startswith(unwanted_prefix):
-                state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
-
-    reward_model.load_state_dict(state_dict)
-
-    reward_model = TensorDictModule(
-        reward_model, in_keys=["input"], out_keys=["reward"]
-    )
 
     # MODEL TO DEVICE
     reward_model.to(config["device"])
@@ -210,7 +143,7 @@ PPO_CONFIG = {
 
 
 def main():
-    config = load_and_update_config("config/train_rl.yaml")
+    config = load_and_update_config("config/train_rlhf.yaml")
     config["ppo"] = PPO_CONFIG
 
     setup(config)

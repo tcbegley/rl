@@ -6,12 +6,80 @@ https://github.com/openai/gpt-2/blob/master/src/model.py
 2) huggingface/transformers PyTorch implementation:
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
 """
+import copy
+import os
+
 import torch
 import torch.nn as nn
 from nanoGPT.model import GPT, GPTConfig
+from tensordict.nn import TensorDictModule
+from torch.distributions.categorical import Categorical
 from torch.nn import functional as F
 
+from torchrl.modules import (
+    ActorValueOperator,
+    SafeProbabilisticModule,
+    SafeProbabilisticTensorDictSequential,
+)
+
+from .transformer import init_transformer
+from .utils import load_checkpoint, _remove_state_dict_prefixes
+
 __all__ = ["GPT", "GPTConfig", "RLHF"]
+
+
+class ActorCritic(ActorValueOperator):
+    def __init__(self, base_model):
+
+        base_model = copy.deepcopy(base_model)
+        n_embd = base_model.lm_head.in_features
+
+        # actor network
+        # extract last layer to be reused by actor
+        actor_head = base_model.lm_head
+        base_model.lm_head = nn.Identity()
+
+        # critic network
+        value_head = nn.Linear(n_embd, 1, bias=False)
+
+        common = TensorDictModule(base_model, in_keys=["prompt"], out_keys=["x"])
+
+        actor_head = TensorDictModule(actor_head, in_keys=["x"], out_keys=["logits"])
+        actor_head = SafeProbabilisticTensorDictSequential(
+            actor_head,
+            SafeProbabilisticModule(
+                in_keys=["logits"],
+                out_keys=["action"],
+                distribution_class=Categorical,
+                return_log_prob=True,
+            ),
+        )
+        value_head = TensorDictModule(
+            value_head, in_keys=["x"], out_keys=["state_value"]
+        )
+
+        super().__init__(common, actor_head, value_head)
+
+
+def init_rlhf_models(config):
+    model_base, _ = init_transformer(config)
+    a2c_model = ActorCritic(model_base)
+
+    # model init: Reward
+    reward_model = RLHF(model_base, "reward", discrete_reward=config["discrete_reward"])
+
+    # TODO: update reward model weights here?
+    checkpoint = load_checkpoint(config["out_dir_reward"], config["device"])
+    state_dict = checkpoint["model"]
+    _remove_state_dict_prefixes(state_dict)
+
+    reward_model.load_state_dict(state_dict)
+
+    reward_model = TensorDictModule(
+        reward_model, in_keys=["input"], out_keys=["reward"]
+    )
+
+    return reward_model, a2c_model
 
 
 class RLHF(nn.Module):
