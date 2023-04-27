@@ -47,7 +47,7 @@ def main():
     config = load_and_update_config("config/train.yaml")
     ctx = setup(config)
 
-    # ######## INIT MODELS ######## 
+    # ######## INIT MODELS ########
     model, model_kwargs = init_transformer(config)
 
     # ######## INIT TRAINING FUNCTIONS ########
@@ -64,13 +64,6 @@ def main():
     best_val_loss = config.setdefault("best_val_loss", 1e9)
 
     # ######## TRAINING LOOP ########
-    # initial evaluation 
-    val_loss = estimate_loss(model, val_loader)
-    train_loss = estimate_loss(model, train_loader)
-    print(f"step {iter_num}: train loss {train_loss:.4f}, val loss {val_loss:.4f}")
-    if config["eval_only"]:
-        return
-
     t0 = time.time()
     next_batch = next(train_loader)  # fetch the very first batch
     for iter_num in range(iter_num, config["max_iters"]):
@@ -78,7 +71,7 @@ def main():
         lr = lr_scheduler(iter_num)
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
-        
+
         # FIXME: do we need gradient accumulation steps? why we are doing this only in train?
 
         # forward backward update, with optional gradient accumulation to simulate larger batch size
@@ -117,7 +110,7 @@ def main():
                 best_val_loss = val_loss
                 if iter_num > 0:
                     checkpoint = {
-                        "model": model.module.state_dict(),
+                        "model": model.module._orig_mod.state_dict(),
                         "optimizer": optimizer.state_dict(),
                         "model_kwargs": model_kwargs,
                         "iter_num": iter_num,

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+from tensordict.nn import TensorDictModule
 
 from .transformer import init_transformer
 from .utils import _remove_state_dict_prefixes, load_checkpoint
@@ -16,7 +17,7 @@ class RewardModel(nn.Module):
 
         self.n_embd = model.lm_head.in_features
         self.block_size = model.config.block_size
-        self.model.reward_head = nn.Linear(
+        self.reward_head = nn.Linear(
             self.model.lm_head.in_features, 1, bias=False
         )
 
@@ -39,12 +40,12 @@ class RewardModel(nn.Module):
             x = block(x)
         x = self.model.transformer.ln_f(x)
 
-        return self.model.reward_head(x[:, -1, :])
+        return self.reward_head(x[:, -1, :])
 
 
 def init_reward_model(config):
     # FIXME: Don't like this. include it into model
-    model, model_kwargs = init_transformer(config)
+    model, model_kwargs = init_transformer(config, as_tensordictmodule=False)
     model = RewardModel(model)
 
     print("Config of model: ", model.config)

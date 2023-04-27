@@ -20,7 +20,7 @@ def main():
     config = load_and_update_config("config/train_rlhf.yaml")
     setup(config)
 
-    # ######## INIT MODELS ######## 
+    # ######## INIT MODELS ########
     actor, critic = init_actor_critic(config)
 
     reward_model, _ = init_reward_model(config)
@@ -31,10 +31,10 @@ def main():
     # FIXME: why not using the scheduler?
     # Loss
     loss_fn = ClipPPOLoss(actor, critic, gamma=0.99)
-    
+
     # Optimizer
     optimizer = torch.optim.AdamW(loss_fn.parameters(), lr=1e-3)
-    
+
     # DataLoader
     train_loader, _ = get_dataloaders(config)
 
@@ -43,16 +43,15 @@ def main():
 
     # ######## TRAINING LOOP ########
 
-    def get_action_value(td):
-        # TODO: explain why we need this
+    def get_action(td):
         critic(td)
         actor(td)
-        # td["sample_log_prob"] = td["sample_log_prob"].detach()
+        td["sample_log_prob"] = td["sample_log_prob"].detach()
         return td
 
     for i in range(config["max_iters"]):
         td = env.rollout(
-            config["episode_length"], policy=get_action_value, return_contiguous=False
+            config["episode_length"], policy=get_action, return_contiguous=False
         )
 
         # TODO: add replay buffer?
@@ -68,7 +67,7 @@ def main():
         optimizer.zero_grad()
 
         # Logging
-        print(f"Iteration {i}: {loss_val=}")    
+        print(f"Iteration {i}: {loss_val=}")
 
     # TODO: save model
     # TODO: generate something?

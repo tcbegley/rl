@@ -33,11 +33,11 @@ def main():
     config = load_and_update_config("config/train_reward.yaml")
     ctx = setup(config)
 
-    # ######## INIT MODELS ######## 
+    # ######## INIT MODELS ########
     model, model_kwargs = init_reward_model(config)
 
     # ######## INIT TRAINING FUNCTIONS ########
-    
+
     optimizer = torch.optim.AdamW(model.model.parameters(), lr=1e-4)
     lr_scheduler = create_lr_scheduler(config)
 
@@ -50,13 +50,6 @@ def main():
     best_val_loss = config.setdefault("best_val_loss", 1e9)
 
     # ######## TRAINING LOOP ########
-    # initial evaluation 
-    val_loss = estimate_loss(model, val_loader)
-    train_loss = estimate_loss(model, train_loader)
-    print(f"step {iter_num}: train loss {train_loss:.4f}, val loss {val_loss:.4f}")
-    if config["eval_only"]:
-        return
-
     t0 = time.time()
     for iter_num in range(iter_num, config["max_iters"]):
         # get and update the learning rate
@@ -93,15 +86,15 @@ def main():
                 best_val_loss = val_loss
                 if iter_num > 0:
                     checkpoint = {
-                        "model": model.module.state_dict(),
+                        "model": model.module._orig_mod.state_dict(),
                         "optimizer": optimizer.state_dict(),
                         "model_kwargs": model_kwargs,
                         "iter_num": iter_num,
                         "best_val_loss": best_val_loss,
                         "config": config,
                     }
-                    print(f"saving checkpoint to {config['out_dir']}")
-                    torch.save(checkpoint, os.path.join(config["out_dir"], "ckpt.pt"))
+                    print(f"saving checkpoint to {config['out_dir_reward']}")
+                    torch.save(checkpoint, os.path.join(config["out_dir_reward"], "ckpt.pt"))
         elif iter_num % config["log_interval"] == 0:
             # loss as float. note: this is a CPU-GPU sync point
             lossf = batch.loss.item()
