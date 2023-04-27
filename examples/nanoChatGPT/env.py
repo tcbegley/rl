@@ -22,23 +22,23 @@ HERE = Path(__file__).parent
 
 @torch.no_grad()
 def _step(self, tensordict):
-    generated = tensordict["generated"]
+    prompt = tensordict["prompt"]
 
     # perform the action
     action = tensordict["action"].squeeze(-1)
 
     # compute the reward
-    if generated.shape[-1] >= self.config["episode_length"]:
-        reward = self.reward_model(generated).unsqueeze(-1)
+    if prompt.shape[-1] >= self.config["episode_length"]:
+        reward = self.reward_model(prompt).unsqueeze(-1)
         done = torch.ones_like(reward, dtype=torch.bool)
     else:
         reward = torch.zeros((*tensordict.batch_size, 1))
         done = torch.zeros_like(reward, dtype=torch.bool)
 
     # The output must be written in a ``"next"`` entry
-    next_gen = torch.hstack((generated, action[..., None]))[:, -self.config["block_size"]:]
+    next_prompt = torch.hstack((prompt, action[..., None]))[:, -self.config["block_size"]:]
     out = TensorDict(
-        {"next": {"generated": next_gen, "reward": reward, "done": done}},
+        {"next": {"prompt": next_prompt, "reward": reward, "done": done}},
         tensordict.shape,
     )
     return out
@@ -56,7 +56,7 @@ def _reset(self, tensordict):
 
     out = TensorDict(
         {
-            "generated": batch.prompt[:, -self.config["block_size"] :],
+            "prompt": batch.prompt[:, -self.config["block_size"] :],
             "done": torch.zeros((*batch.prompt.shape[:-1], 1, 1), dtype=torch.bool),
             "reward": torch.zeros(
                 (*batch.prompt.shape[:-1], 1, 1), dtype=torch.float32
@@ -71,10 +71,6 @@ def _make_spec(self):
     # Under the hood, this will populate self.output_spec["observation"]
     self.observation_spec = CompositeSpec(
         prompt=UnboundedDiscreteTensorSpec(
-            shape=(self.config["batch_size"],),
-            dtype=torch.int64,
-        ),
-        generated=UnboundedDiscreteTensorSpec(
             shape=(self.config["batch_size"],),
             dtype=torch.int64,
         ),
@@ -149,7 +145,7 @@ def main():
         # td = get_action(td)
         td["action"] = torch.randint(1, 1000, td.shape)
         td = env.step(td)
-        print("random step tensordict", i, td["action"], td["next", "generated"])
+        print("random step tensordict", i, td["action"], td["next", "prompt"])
         td = step_mdp(td)
     print(list(td.keys(True)))
 

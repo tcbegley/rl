@@ -34,6 +34,7 @@ def setup(config):
 
 
 def create_lr_scheduler(config):
+
     # learning rate decay scheduler (cosine with warmup)
     def scheduler(it):
         # 1) linear warmup for warmup_iters steps
@@ -50,4 +51,9 @@ def create_lr_scheduler(config):
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff ranges 0..1
         return config["min_lr"] + coeff * (config["learning_rate"] - config["min_lr"])
 
-    return scheduler
+    def fixed_lr(_):
+        return config["learning_rate"]
+    
+    if config["decay_lr"]:
+        return scheduler    
+    return fixed_lr

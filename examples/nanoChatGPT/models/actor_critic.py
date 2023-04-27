@@ -17,7 +17,6 @@ __all__ = ["ActorCritic", "init_actor_critic"]
 
 class ActorCritic(ActorValueOperator):
     def __init__(self, base_model):
-
         base_model = copy.deepcopy(base_model)
         n_embd = base_model.lm_head.in_features
 
@@ -25,6 +24,8 @@ class ActorCritic(ActorValueOperator):
         # extract last layer to be reused by actor
         actor_head = base_model.lm_head
         base_model.lm_head = nn.Identity()
+
+        # TODO: compile base_model here?
 
         # critic network
         value_head = nn.Linear(n_embd, 1, bias=False)
@@ -49,7 +50,12 @@ class ActorCritic(ActorValueOperator):
 
 
 def init_actor_critic(config):
-    model_base, _ = init_transformer(config)
+    model_base, _ = init_transformer(config, as_tensordictmodule=False, skip_compilation=True)
     a2c_model = ActorCritic(model_base)
     a2c_model.to(config["device"])
-    return a2c_model
+    actor = a2c_model.get_policy_operator()
+    critic = a2c_model.get_value_operator()
+
+    # FIXME: we are missing compile...
+    # but we would compile TDModule...check performance issues
+    return actor, critic

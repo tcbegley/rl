@@ -1,6 +1,9 @@
 import pickle
 from pathlib import Path
 
+import torch
+from tensordict.nn import TensorDictModule
+
 from .nanoGPT.model import GPT, GPTConfig
 from .utils import _remove_state_dict_prefixes, load_checkpoint
 
@@ -62,7 +65,7 @@ def init_transformer_gpt2(config, model_kwargs):
     return model
 
 
-def init_transformer(config):
+def init_transformer(config, as_tensordictmodule=True, skip_compilation=False):
     model_kwargs = {
         "n_layer": config["n_layer"],
         "n_head": config["n_head"],
@@ -87,6 +90,15 @@ def init_transformer(config):
         model_kwargs["block_size"] = config["block_size"]
 
     model.to(config["device"])
+    # compile the model
+    if not skip_compilation and config["compile"]:
+        print("compiling the model... (takes a ~minute)")
+        model = torch.compile(model)  # requires PyTorch 2.0
+
+    if as_tensordictmodule:
+        model = TensorDictModule(
+            model, in_keys=["prompt", "target"], out_keys=["logits", "loss"]
+        )
     return model, model_kwargs
 
 

@@ -16,29 +16,36 @@ from data.shakespeare import get_dataloaders
 HERE = Path(__file__).parent
 
 
-def train(config):
-    # TODO: clean up...train should do just the training.
-    # model creation, data loading etc. should be performed outside
-    # plus align all script to have same structure and order of calls
-    a2c_model = init_actor_critic(config)
-    actor = a2c_model.get_policy_operator()
-    critic = a2c_model.get_value_operator()
+def main():
+    config = load_and_update_config("config/train_rlhf.yaml")
+    setup(config)
+
+    # ######## INIT MODELS ########
+    actor, critic = init_actor_critic(config)
 
     reward_model, _ = init_reward_model(config)
 
+    # ######## INIT TRAINING FUNCTIONS ########
+    # Advantage
     adv_fn = GAE(value_network=critic, gamma=0.99, lmbda=0.95, average_gae=True)
+    # FIXME: why not using the scheduler?
+    # Loss
     loss_fn = ClipPPOLoss(actor, critic, gamma=0.99)
 
+    # Optimizer
     optimizer = torch.optim.AdamW(loss_fn.parameters(), lr=1e-3)
 
+    # DataLoader
     train_loader, _ = get_dataloaders(config)
 
+    # Environment
     env = RLHFEnv(reward_model=reward_model, config=config, dataloader=train_loader)
 
+    # ######## TRAINING LOOP ########
+
     def get_action(td):
-        prompt = td["generated"]
-        td["x"], td["state_value"] = critic(prompt)
-        _, _, td["action"], td["sample_log_prob"] = actor(prompt)
+        critic(td)
+        actor(td)
         td["sample_log_prob"] = td["sample_log_prob"].detach()
         return td
 
@@ -47,6 +54,7 @@ def train(config):
             config["episode_length"], policy=get_action, return_contiguous=False
         )
 
+        # TODO: add replay buffer?
         with set_skip_existing(True):
             adv_fn(td)
             loss_vals = loss_fn(td)
@@ -57,29 +65,12 @@ def train(config):
         loss_val.backward()
         optimizer.step()
         optimizer.zero_grad()
+
+        # Logging
         print(f"Iteration {i}: {loss_val=}")
 
-
-PPO_CONFIG = {
-    # cardinality of the sub-samples gathered from the current data in the inner loop
-    "sub_batch_size": 64,
-    # optimisation steps per batch of data collected
-    "num_epochs": 10,
-    # clip value for PPO loss: see the equation in the intro for more context.
-    "clip_epsilon": (0.2),
-    "gamma": 0.99,
-    "lmbda": 0.95,
-    "entropy_eps": 1e-4,
-}
-
-
-def main():
-    config = load_and_update_config("config/train_rlhf.yaml")
-    config["ppo"] = PPO_CONFIG
-
-    setup(config)
-    train(config)
-
+    # TODO: save model
+    # TODO: generate something?
 
 if __name__ == "__main__":
     main()
