@@ -87,6 +87,14 @@ def init_transformer(config):
         model_kwargs["block_size"] = config["block_size"]
 
     model.to(config["device"])
+    # compile the model
+    if config["compile"]:
+        print("compiling the model... (takes a ~minute)")
+        model = torch.compile(model)  # requires PyTorch 2.0
+
+    model = TensorDictModule(
+        model, in_keys=["prompt", "target"], out_keys=["logits", "loss"]
+    )
     return model, model_kwargs
 
 

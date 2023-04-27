@@ -52,4 +52,9 @@ def init_actor_critic(config):
     model_base, _ = init_transformer(config)
     a2c_model = ActorCritic(model_base)
     a2c_model.to(config["device"])
-    return a2c_model
+    actor = a2c_model.get_policy_operator()
+    critic = a2c_model.get_value_operator()
+
+    # FIXME: we are missing compile...
+    # but we would compile TDModule...check performance issues
+    return actor, critic

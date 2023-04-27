@@ -64,6 +64,12 @@ def init_reward_model(config):
         model.load_state_dict(state_dict)
 
     model.to(config["device"])
+    # compile the model
+    if config["compile"]:
+        print("compiling the model... (takes a ~minute)")
+        model = torch.compile(model)  # requires PyTorch 2.0
+
+    model = TensorDictModule(model, in_keys=["input"], out_keys=["reward"])
     return model, model_kwargs
 
 
