@@ -28,7 +28,7 @@ def main():
     # ######## INIT TRAINING FUNCTIONS ########
     # Advantage
     adv_fn = GAE(value_network=critic, gamma=0.99, lmbda=0.95, average_gae=True)
-    
+    # FIXME: why not using the scheduler?
     # Loss
     loss_fn = ClipPPOLoss(actor, critic, gamma=0.99)
     
@@ -41,14 +41,13 @@ def main():
     # Environment
     env = RLHFEnv(reward_model=reward_model, config=config, dataloader=train_loader)
 
-    # FIXME: do we need an rl-scheduler?
     # ######## TRAINING LOOP ########
 
     def get_action_value(td):
         # TODO: explain why we need this
         critic(td)
         actor(td)
-        td["sample_log_prob"] = td["sample_log_prob"].detach()
+        # td["sample_log_prob"] = td["sample_log_prob"].detach()
         return td
 
     for i in range(config["max_iters"]):

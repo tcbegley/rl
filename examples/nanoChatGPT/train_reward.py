@@ -37,7 +37,7 @@ def main():
     model, model_kwargs = init_reward_model(config)
 
     # ######## INIT TRAINING FUNCTIONS ########
-    # FIXME: why not using the scheduler?
+    
     optimizer = torch.optim.AdamW(model.model.parameters(), lr=1e-4)
     lr_scheduler = create_lr_scheduler(config)
 
@@ -59,9 +59,8 @@ def main():
 
     t0 = time.time()
     for iter_num in range(iter_num, config["max_iters"]):
-        # determine and set the learning rate for this iteration
+        # get and update the learning rate
         lr = lr_scheduler(iter_num)
-
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
 

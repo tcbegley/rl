@@ -74,10 +74,8 @@ def main():
     t0 = time.time()
     next_batch = next(train_loader)  # fetch the very first batch
     for iter_num in range(iter_num, config["max_iters"]):
-        # determine and set the learning rate for this iteration
+        # get and update the learning rate
         lr = lr_scheduler(iter_num)
-
-        # FIXME: this is not present elsewhere. why?
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
         
