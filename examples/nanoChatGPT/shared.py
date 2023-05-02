@@ -31,7 +31,6 @@ def setup(config):
     return ctx
 
 
-
 def create_lr_scheduler(config):
 
     # learning rate decay scheduler (cosine with warmup)

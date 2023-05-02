@@ -17,9 +17,7 @@ class RewardModel(nn.Module):
 
         self.n_embd = model.lm_head.in_features
         self.block_size = model.config.block_size
-        self.reward_head = nn.Linear(
-            self.model.lm_head.in_features, 1, bias=False
-        )
+        self.reward_head = nn.Linear(self.model.lm_head.in_features, 1, bias=False)
 
     def forward(self, idx):
         device = idx.device
