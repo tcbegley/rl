@@ -1,7 +1,7 @@
 import os
+import time
 from pathlib import Path
 
-import time
 import torch
 from models.reward import init_reward_model
 from shared import create_lr_scheduler, setup

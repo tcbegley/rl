@@ -11,7 +11,7 @@ git submodule init
 git submodule update
 ```
 
-From this directory, you can install extra requirements for running these examples with
+Make sure you have PyTorch installed. From this directory, you can install extra requirements for running these examples with
 
 ```sh
 pip install -r requirements.txt
