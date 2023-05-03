@@ -3,6 +3,5 @@ numpy
 PyYAML
 requests
 tiktoken
-torch
 tqdm
 transformers
