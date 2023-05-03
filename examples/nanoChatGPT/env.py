@@ -60,9 +60,6 @@ def _reset(self, tensordict):
         {
             "prompt": batch.prompt[:, -self.config["block_size"] :],
             "done": torch.zeros((*batch.prompt.shape[:-1], 1, 1), dtype=torch.bool),
-            "reward": torch.zeros(
-                (*batch.prompt.shape[:-1], 1, 1), dtype=torch.float32
-            ),
         },
         tensordict.shape,
     )
@@ -75,7 +72,7 @@ def _make_spec(self):
         prompt=BoundedTensorSpec(
             minimum=0,
             maximum=DEFAULT_VOCAB_SIZE,
-            shape=(self.config["batch_size"],),
+            shape=(self.config["batch_size"], self.config["block_size"]),
             dtype=torch.int64,
         ),
         shape=(self.config["batch_size"],),
@@ -93,7 +90,12 @@ def _make_spec(self):
     self.reward_spec = UnboundedContinuousTensorSpec(
         shape=(self.config["batch_size"], 1, 1)
     )
-    self.done_spec = self.reward_spec.clone()
+    self.done_spec = BoundedTensorSpec(
+        minimum=0,
+        maximum=1,
+        shape=(self.config["batch_size"], 1, 1),
+        dtype=torch.bool,
+    )
 
 
 def _set_seed(self, seed: Optional[int]):
@@ -132,7 +134,6 @@ def main():
 
     config = load_and_update_config("config/train_rlhf.yaml")
     reward_model, _ = init_reward_model(config)
-    reward_model.to(config["device"])
     train_loader, _ = get_dataloaders(config)
     env = RLHFEnv(reward_model=reward_model, dataloader=train_loader, config=config)
 
