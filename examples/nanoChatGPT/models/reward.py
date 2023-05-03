@@ -42,8 +42,10 @@ class RewardModel(nn.Module):
 
 
 def init_reward_model(config):
-    # FIXME: Don't like this. include it into model
-    model, model_kwargs = init_transformer(config, as_tensordictmodule=False)
+    # skip compilation because we will compile the entire reward model as one
+    model, model_kwargs = init_transformer(
+        config, as_tensordictmodule=False, skip_compilation=True
+    )
     model = RewardModel(model)
 
     print("Config of model: ", model.config)
