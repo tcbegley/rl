@@ -43,22 +43,22 @@ def main():
 
     # ######## TRAINING LOOP ########
 
-    def get_action(td):
-        critic(td)
-        actor(td)
-        td["sample_log_prob"] = td["sample_log_prob"].detach()
-        return td
+    # def get_action(td):
+    #     critic(td)
+    #     actor(td)
+    #     td["sample_log_prob"] = td["sample_log_prob"].detach()
+    #     return td
 
     for i in range(config["max_iters"]):
-        td = env.rollout(
-            config["episode_length"], policy=get_action, return_contiguous=False
-        )
+        with torch.no_grad():
+            td = env.rollout(
+                config["episode_length"], policy=actor, return_contiguous=False
+            )
 
-        # TODO: add replay buffer?
         with set_skip_existing(True):
             adv_fn(td)
-            loss_vals = loss_fn(td)
 
+        loss_vals = loss_fn(td)
         loss_val = sum(
             value for key, value in loss_vals.items() if key.startswith("loss")
         )
