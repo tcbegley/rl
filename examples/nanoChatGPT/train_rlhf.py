@@ -84,8 +84,6 @@ def main():
             rb.extend(tdd.view(-1))
             del tdd
             for batch in rb:
-
-                # TODO: add replay buffer?
                 # with set_skip_existing(True):
                 loss_vals = loss_fn(batch.to(device))
 
