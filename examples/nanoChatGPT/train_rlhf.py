@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import torch
@@ -78,12 +79,15 @@ def main():
     rewards = []
     losses = []
 
+
     for i in range(max_iters):
+        start_time = time.time()
         with torch.no_grad():
             td = env.rollout(ep_length, policy=actor, return_contiguous=True).cpu()
         for epoch in range(num_epochs):
-            tdd = adv_fn(td.to(device))
-            rb.extend(tdd.view(-1))
+            tdd = adv_fn(td.to(device)).exclude("x")
+            # print(tdd)
+            rb.extend(tdd.reshape(-1))
             del tdd
             for batch in rb:
                 # with set_skip_existing(True):
@@ -96,7 +100,9 @@ def main():
                 optimizer.step()
                 optimizer.zero_grad()
         print(
-            f"Iteration {i}: {loss_val=}, reward={td.get(('next', 'reward')).mean(): 4.4f}"
+            f"Iteration {i}: {loss_val=}, "
+            f"reward={td.get(('next', 'reward')).mean(): 4.4f}, "
+            f"time elapsed={time.time() - start_time:.2f}"
         )
         rewards.append(-td.get(("next", "reward")).mean().detach().cpu())
         losses.append(loss_val.detach().cpu())
