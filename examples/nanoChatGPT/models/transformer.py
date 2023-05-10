@@ -64,6 +64,8 @@ def init_transformer_gpt2(config, model_kwargs):
     for k in ["n_layer", "n_head", "n_embd", "block_size", "bias", "vocab_size"]:
         model_kwargs[k] = getattr(model.config, k)
 
+    print(model_kwargs)
+
     return model
 
 

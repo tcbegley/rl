@@ -8,44 +8,46 @@ from data import get_prompt_dataloaders
 from models.reward import init_reward_model
 from models.transformer import DEFAULT_VOCAB_SIZE
 from tensordict.tensordict import TensorDict
-from transformers import pipeline
 
 from torchrl.data import BoundedTensorSpec, CompositeSpec, UnboundedContinuousTensorSpec
 from torchrl.envs import EnvBase
 from torchrl.envs.utils import step_mdp
+from transformers import pipeline
 from utils import load_and_update_config
 
 HERE = Path(__file__).parent
 
 
 def get_reward_factory(config):
-    sentiment_pipeline = pipeline(
-        model="finiteautomata/bertweet-base-sentiment-analysis"
-    )
+    sentiment_pipeline = pipeline(model="cardiffnlp/twitter-roberta-base-sentiment")
 
     def get_reward(text, mode):
         sent = sentiment_pipeline(text)
-        if mode == '+':
-            labels = torch.tensor(
-                [a['label']=='POS' for a in sent],dtype=torch.float16
-            ).unsqueeze(-1).to(config["device"])
-        elif mode == '-':
-            labels = torch.tensor(
-                [a['label']=='NEG' for a in sent],dtype=torch.float16
-            ).unsqueeze(-1).to(config["device"])
-        else:
-            raise ValueError('Unknown Mode')
 
-        weights = torch.tensor(
-            [a['score'] for a in sent],dtype=torch.float32
-        ).unsqueeze(-1).to(config["device"])
+        labels = (
+            torch.tensor([a["label"].endswith("2") for a in sent], dtype=torch.float16)
+            .unsqueeze(-1)
+            .to(config["device"])
+        ) - (
+            torch.tensor([a["label"].endswith("0") for a in sent], dtype=torch.float16)
+            .unsqueeze(-1)
+            .to(config["device"])
+        )
 
-        rewards = labels * weights # (B, 1)
+        if mode == "-":
+            labels = -labels
+
+        weights = (
+            torch.tensor([a["score"] for a in sent], dtype=torch.float32)
+            .unsqueeze(-1)
+            .to(config["device"])
+        )
+
+        rewards = labels * weights  # (B, 1)
 
         return rewards
 
     return get_reward
-
 
 
 @torch.no_grad()
@@ -60,12 +62,17 @@ def _step(self, tensordict):
     next_prompt = torch.hstack((prompt, action))[:, -self.block_size :]
 
     # compute the reward
+    reward = self.get_reward(
+        [
+            self.enc.decode(s.tolist())
+            for s in prompt[:, -min(self.step_num, self.config["block_size"]) :]
+        ],
+        mode="+",
+    )
     if self.step_num >= self.episode_length:
         # reward = self.reward_model(prompt).unsqueeze(-1)
-        reward = self.get_reward([self.enc.decode(s.tolist()) for s in prompt], mode="+")
         done = torch.ones_like(reward, dtype=torch.bool)
     else:
-        reward = torch.zeros((*tensordict.batch_size, 1))
         done = torch.zeros_like(reward, dtype=torch.bool)
     assert self.reward_spec.shape == reward.shape, (
         self.batch_size,
@@ -84,7 +91,11 @@ def _step(self, tensordict):
 @torch.no_grad()
 def _reset(self, tensordict):
     self.step_num = 0
-    batch = next(self.dataloader)
+    if not hasattr(self, "my_batch"):
+        batch = next(self.dataloader)
+        self.my_batch = batch
+    else:
+        batch = self.my_batch
 
     prompt = batch.prompt[:, -self.block_size :]
     out = TensorDict(

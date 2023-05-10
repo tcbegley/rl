@@ -1,4 +1,5 @@
 from copy import deepcopy
+import time
 from pathlib import Path
 
 import tiktoken
@@ -46,6 +47,24 @@ def evaluate_agent(actor, env, episode_length=50, logger=None):
     return reward
 
 
+class VmapCritic(TensorDictModuleBase):
+    def __init__(self, critic):
+        super().__init__()
+        self.in_keys = critic.in_keys
+        self.out_keys = critic.out_keys
+        self.module = critic
+
+    def forward(self, tensordict):
+        ndim = tensordict.ndim
+        training = self.module.training
+        self.module.eval()
+        td = vmap(self.module, (ndim - 1,))(tensordict)
+        self.module.train(training)
+        # vmap sends this dim to the beginning so we need to send it back where it belongs
+        td = td.permute(*range(1, ndim), 0)
+        return tensordict.update(td)
+
+
 def main():
     reward_logger = get_file_logger("reward_logger", "rewards.log")
     test_reward_logger = get_file_logger("test_reward_logger", "test_rewards.log")
@@ -65,23 +84,6 @@ def main():
 
     # ######## INIT TRAINING FUNCTIONS ########
     # Advantage
-    class VmapCritic(TensorDictModuleBase):
-        def __init__(self, critic):
-            super().__init__()
-            self.in_keys = critic.in_keys
-            self.out_keys = critic.out_keys
-            self.module = critic
-
-        def forward(self, tensordict):
-            ndim = tensordict.ndim
-            training = self.module.training
-            self.module.eval()
-            td = vmap(self.module, (ndim - 1,))(tensordict)
-            self.module.train(training)
-            # vmap sends this dim to the beginning so we need to send it back where it belongs
-            td = td.permute(*range(1, ndim), 0)
-            return tensordict.update(td)
-
     vmap_critic = VmapCritic(critic)
 
     adv_fn = GAE(value_network=vmap_critic, gamma=0.99, lmbda=0.95, average_gae=True)
@@ -147,6 +149,7 @@ def main():
     )
     pbar = tqdm.tqdm(total=total_frames)
     for i, td in enumerate(collector):
+        start_time = time.time()
         rewards.append(td.get(("next", "reward")).mean().cpu().item())
         reward_logger.debug(rewards[-1])
 
