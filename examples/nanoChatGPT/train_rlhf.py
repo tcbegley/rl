@@ -75,6 +75,8 @@ def main():
         batch_size=config["ppo_batch_size"],
         sampler=SamplerWithoutReplacement(),
     )
+    rewards = []
+    losses = []
 
     for i in range(max_iters):
         with torch.no_grad():
@@ -96,7 +98,17 @@ def main():
         print(
             f"Iteration {i}: {loss_val=}, reward={td.get(('next', 'reward')).mean(): 4.4f}"
         )
+        rewards.append(-td.get(("next", "reward")).mean().detach().cpu())
+        losses.append(loss_val.detach().cpu())
 
+    import matplotlib.pyplot as plt
+
+    f, ax = plt.subplots(figsize=(8, 6))
+    ax.plot(rewards, label="reward")
+    ax.plot(losses, label="loss")
+    ax.legend()
+
+    f.savefig("figures/curves.png", dpi=150)
     # TODO: save model
     # TODO: generate something?
 
