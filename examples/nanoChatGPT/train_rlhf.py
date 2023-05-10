@@ -7,7 +7,7 @@ import torch
 import tqdm
 
 from data import get_prompt_dataloaders
-from env import RLHFEnv
+from env import RLHFEnv, get_reward_factory
 from models.actor_critic import init_actor_critic
 from models.reward import init_reward_model
 from shared import setup
@@ -59,9 +59,9 @@ def main():
     actor.eval()  # deactivate dropout on all modules
     critic.eval()
 
-    reward_model, _ = init_reward_model(config)
-    reward_model.requires_grad_(False)
-    reward_model.eval()
+    # reward_model, _ = init_reward_model(config)
+    # reward_model.requires_grad_(False)
+    # reward_model.eval()
 
     # ######## INIT TRAINING FUNCTIONS ########
     # Advantage
@@ -103,7 +103,9 @@ def main():
     train_loader, _ = get_prompt_dataloaders(config)
 
     # Environment
-    env = RLHFEnv(reward_model=reward_model, config=config, dataloader=train_loader)
+    env = RLHFEnv(
+        get_reward=get_reward_factory(config), config=config, dataloader=train_loader
+    )
 
     # Test Environment
     test_config = deepcopy(config)
@@ -111,7 +113,9 @@ def main():
     test_config["episode_length"] = 50
     train_loader_test, _ = get_prompt_dataloaders(test_config)
     test_env = RLHFEnv(
-        reward_model=reward_model, config=test_config, dataloader=train_loader_test
+        get_reward=get_reward_factory(test_config),
+        config=test_config,
+        dataloader=train_loader_test
     )
 
     # ######## TRAINING LOOP ########
