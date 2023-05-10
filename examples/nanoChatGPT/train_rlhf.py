@@ -4,7 +4,7 @@ from pathlib import Path
 import torch
 
 from data.shakespeare import get_dataloaders
-from env import RLHFEnv
+from env import RLHFEnv, get_reward_factory
 from models.actor_critic import init_actor_critic
 from models.reward import init_reward_model
 from shared import setup
@@ -27,7 +27,7 @@ def main():
     # ######## INIT MODELS ########
     actor, critic, critic_head = init_actor_critic(config)
 
-    reward_model, _ = init_reward_model(config)
+    # reward_model, _ = init_reward_model(config)
 
     # ######## INIT TRAINING FUNCTIONS ########
     # Advantage
@@ -63,7 +63,9 @@ def main():
     train_loader, _ = get_dataloaders(config)
 
     # Environment
-    env = RLHFEnv(reward_model=reward_model, config=config, dataloader=train_loader)
+    env = RLHFEnv(
+        get_reward=get_reward_factory(config), config=config, dataloader=train_loader
+    )
 
     # ######## TRAINING LOOP ########
 

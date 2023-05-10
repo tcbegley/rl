@@ -1,12 +1,14 @@
 from pathlib import Path
 from typing import Optional
 
+import tiktoken
 import torch
 
 from data.shakespeare import get_dataloaders
 from models.reward import init_reward_model
 from models.transformer import DEFAULT_VOCAB_SIZE
 from tensordict.tensordict import TensorDict
+from transformers import pipeline
 
 from torchrl.data import BoundedTensorSpec, CompositeSpec, UnboundedContinuousTensorSpec
 from torchrl.envs import EnvBase
@@ -14,6 +16,36 @@ from torchrl.envs.utils import step_mdp
 from utils import load_and_update_config
 
 HERE = Path(__file__).parent
+
+
+def get_reward_factory(config):
+    sentiment_pipeline = pipeline(
+        model="finiteautomata/bertweet-base-sentiment-analysis"
+    )
+
+    def get_reward(text, mode):
+        sent = sentiment_pipeline(text)
+        if mode == '+':
+            labels = torch.tensor(
+                [a['label']=='POS' for a in sent],dtype=torch.float16
+            ).unsqueeze(-1).to(config["device"])
+        elif mode == '-':
+            labels = torch.tensor(
+                [a['label']=='NEG' for a in sent],dtype=torch.float16
+            ).unsqueeze(-1).to(config["device"])
+        else:
+            raise ValueError('Unknown Mode')
+
+        weights = torch.tensor(
+            [a['score'] for a in sent],dtype=torch.float32
+        ).unsqueeze(-1).to(config["device"])
+
+        rewards = labels * weights # (B, 1)
+
+        return rewards
+
+    return get_reward
+
 
 
 @torch.no_grad()
@@ -26,7 +58,8 @@ def _step(self, tensordict):
 
     # compute the reward
     if self.step_num >= self.config["episode_length"]:
-        reward = self.reward_model(prompt).unsqueeze(-1)
+        # reward = self.reward_model(prompt).unsqueeze(-1)
+        reward = self.get_reward([self.enc.decode(s.tolist()) for s in prompt], mode="+")
         done = torch.ones_like(reward, dtype=torch.bool)
     else:
         reward = torch.zeros((*tensordict.batch_size, 1))
@@ -104,14 +137,16 @@ def _set_seed(self, seed: Optional[int]):
 class RLHFEnv(EnvBase):
     batch_locked = False
 
-    def __init__(self, reward_model=None, config=None, dataloader=None, seed=None):
+    def __init__(self, get_reward=None, config=None, dataloader=None, seed=None):
         # if td_params is None:
         #     td_params = self.gen_params()
         super().__init__(device=config["device"], batch_size=[config["batch_size"]])
 
-        self.reward_model = reward_model
+        # self.reward_model = reward_model
+        self.get_reward = get_reward
         self.config = config
         self.dataloader = dataloader
+        self.enc = tiktoken.get_encoding("gpt2")
         self._make_spec()
         if seed is None:
             seed = torch.empty((), dtype=torch.int64).random_().item()
@@ -132,9 +167,11 @@ def main():
     from torchrl.envs import check_env_specs
 
     config = load_and_update_config("config/train_rlhf.yaml")
-    reward_model, _ = init_reward_model(config)
+    # reward_model, _ = init_reward_model(config)
     train_loader, _ = get_dataloaders(config)
-    env = RLHFEnv(reward_model=reward_model, dataloader=train_loader, config=config)
+    env = RLHFEnv(
+        get_reward=get_reward_factory(config), dataloader=train_loader, config=config
+    )
 
     check_env_specs(env)
 
