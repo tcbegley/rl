@@ -25,7 +25,7 @@ def _step(self, tensordict):
     action = tensordict.get("action")
 
     # The output must be written in a ``"next"`` entry
-    next_prompt = torch.hstack((prompt, action))[:, -self.block_size:]
+    next_prompt = torch.hstack((prompt, action))[:, -self.block_size :]
 
     # compute the reward
     if self.step_num >= self.episode_length:
@@ -34,7 +34,11 @@ def _step(self, tensordict):
     else:
         reward = torch.zeros((*tensordict.batch_size, 1))
         done = torch.zeros_like(reward, dtype=torch.bool)
-    assert self.reward_spec.shape == reward.shape, (self.batch_size, reward.shape, reward.dtype)
+    assert self.reward_spec.shape == reward.shape, (
+        self.batch_size,
+        reward.shape,
+        reward.dtype,
+    )
     assert self.done_spec.shape == done.shape, (self.batch_size, done.shape, done.dtype)
 
     out = TensorDict(

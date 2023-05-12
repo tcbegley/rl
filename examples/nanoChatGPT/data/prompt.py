@@ -41,15 +41,15 @@ class PromptDataset(Dataset):
         self.block_size = block_size
 
     def __getitems__(self, idx):
-        idx = torch.tensor(idx).unsqueeze(1) + torch.arange(self.block_size).unsqueeze(0)
+        idx = torch.tensor(idx).unsqueeze(1) + torch.arange(self.block_size).unsqueeze(
+            0
+        )
 
         return Data(
-            prompt=torch.from_numpy(
-                self._memmap[idx[:]].astype(np.int64)
-            ).view_as(idx),
-            target=torch.from_numpy(
-                self._memmap[idx[:]+1].astype(np.int64)
-            ).view_as(idx),
+            prompt=torch.from_numpy(self._memmap[idx[:]].astype(np.int64)).view_as(idx),
+            target=torch.from_numpy(self._memmap[idx[:] + 1].astype(np.int64)).view_as(
+                idx
+            ),
             batch_size=[],
         )
 
