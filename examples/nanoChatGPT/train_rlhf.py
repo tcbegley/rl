@@ -109,7 +109,7 @@ def main():
     test_config = deepcopy(config)
     test_config["batch_size"] = 1
     test_config["episode_length"] = 50
-    train_loader_test, _ = get_dataloaders(test_config)
+    train_loader_test, _ = get_prompt_dataloaders(test_config)
     test_env = RLHFEnv(
         reward_model=reward_model, config=test_config, dataloader=train_loader_test
     )
