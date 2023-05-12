@@ -1,15 +1,12 @@
 # download and prepare the openai_summarize_tldr dataset for fine tuning transformers
 # adapted from
 # https://github.com/sanjeevanahilan/nanoChatGPT/blob/3cde2746c7ea8b0bd32edd44c76ead581bbda5d5/data/openai_summarize_tldr/prepare.py
-import os
 from pathlib import Path
 
 import numpy as np
 import tiktoken
 from tqdm import tqdm
 from datasets import load_dataset # huggingface datasets
-
-from .utils import Collate, PairedDataset, create_infinite_dataloader
 
 # number of workers in .map() call
 # good number to use is ~order number of cpu cores // 2
@@ -27,7 +24,7 @@ def _process(example):
     return {'ids': ids, 'len': len(ids)}
 
 
-def _create_memmaps():
+def create_tldr_memmaps():
     dataset = load_dataset(DATASET)
 
     train_text_list = []
@@ -41,8 +38,8 @@ def _create_memmaps():
     val_text_list = []
     for sample in dataset['val']:
         val_text_list.append(sample['prompt'] + sample['label'])
-    dataset['val'] = dataset['val'].add_column('text', val_text_list) # add the text column to the val dataset
-
+    # add the text column to the val dataset
+    dataset['val'] = dataset['val'].add_column('text', val_text_list)
     dataset.pop('test') # remove the test dataset
 
     split_dataset = dataset
@@ -70,7 +67,10 @@ def _create_memmaps():
     # concatenate all the ids in each dataset into one large file we can use for training
     for split, dset in tokenized.items():
         arr_len = np.sum(dset['len'])
-        filename = HERE / f'{split}.bin'
+        data_dir = HERE / "tldr"
+        if not data_dir.exists():
+            data_dir.mkdir()
+        filename = data_dir / f'{split}.bin'
         dtype = np.uint16 # (can do since enc.max_token_value == 50256 is < 2**16)
         arr = np.memmap(filename, dtype=dtype, mode='w+', shape=(arr_len,))
 
@@ -80,24 +80,3 @@ def _create_memmaps():
             arr[idx : idx + example['len']] = example['ids']
             idx += example['len']
         arr.flush()
-
-
-def create_datasets(config):
-    if not (HERE / "train.bin").exists():
-        _create_memmaps()
-
-    train_data = PairedDataset(HERE / "train.bin", block_size=config["block_size"])
-    val_data = PairedDataset(HERE / "val.bin", block_size=config["block_size"])
-
-    return train_data, val_data
-
-
-def get_dataloaders(config):
-    train_data, val_data = create_datasets(config)
-
-    train_loader = create_infinite_dataloader(
-        train_data, config, Collate(config["device"])
-    )
-    val_loader = create_infinite_dataloader(val_data, config, Collate(config["device"]))
-
-    return train_loader, val_loader
