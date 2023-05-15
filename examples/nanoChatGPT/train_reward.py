@@ -20,8 +20,8 @@ def create_loss_estimator(config, ctx):
         for k in range(config["eval_iters"]):
             batch = next(dataloader)
             with ctx:
-                reward_chosen = model(batch.chosen)
-                reward_rejected = model(batch.rejected)
+                reward_chosen = model(batch.prompt, batch.chosen)
+                reward_rejected = model(batch.prompt, batch.rejected)
                 loss = -torch.log(torch.sigmoid(reward_chosen - reward_rejected)).mean()
             losses[k] = loss.item()
         return losses.mean()
@@ -38,7 +38,7 @@ def main():
 
     # ######## INIT TRAINING FUNCTIONS ########
 
-    optimizer = torch.optim.AdamW(model.model.parameters(), lr=1e-4)
+    optimizer = torch.optim.AdamW(model.reward_head.parameters(), lr=1e-4)
     lr_scheduler = create_lr_scheduler(config)
 
     estimate_loss = create_loss_estimator(config, ctx)
@@ -62,8 +62,8 @@ def main():
         # TODO: check why is different from std model (missing micro gradients)
 
         # evaluate the loss
-        reward_chosen = model(batch.chosen)
-        reward_rejected = model(batch.rejected)
+        reward_chosen = model(batch.prompt, batch.chosen)
+        reward_rejected = model(batch.prompt, batch.rejected)
         loss = -torch.log(torch.sigmoid(reward_chosen - reward_rejected)).mean()
 
         optimizer.zero_grad(set_to_none=True)

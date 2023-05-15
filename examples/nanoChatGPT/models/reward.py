@@ -17,28 +17,35 @@ class RewardModel(nn.Module):
 
         self.n_embd = model.lm_head.in_features
         self.block_size = model.config.block_size
-        self.reward_head = nn.Linear(self.model.lm_head.in_features, 1, bias=False)
+        self.reward_head = nn.Linear(self.model.lm_head.in_features * 2, 1, bias=False)
 
-    def forward(self, idx):
-        device = idx.device
-        b, t = idx.size()
+    def forward(self, prompt, response):
+        prompt_emb = self._embed(prompt)
+        response_emb = self._embed(response)
+
+        emb = torch.cat([prompt_emb, response_emb], dim=-1)
+        return self.reward_head(emb)
+
+    def _embed(self, tokens):
+        block_size = self.config.block_size
+        *_, t = tokens.size()
         assert (
-            t <= self.config.block_size
-        ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+            t <= block_size
+        ), (
+            f"Can't forward sequence length {t}, with block size {block_size}"
+        )
+        device = tokens.device
         # shape (1, t)
         pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0)
 
-        # forward the GPT model itself
-        # token embeddings of shape (b, t, n_embd)
-        tok_emb = self.model.transformer.wte(idx)
-        # position embeddings of shape (1, t, n_embd)
+        token_emb = self.model.transformer.wte(tokens)
         pos_emb = self.model.transformer.wpe(pos)
-        x = self.model.transformer.drop(tok_emb + pos_emb)
+
+        x = self.model.transformer.drop(token_emb + pos_emb)
         for block in self.model.transformer.h:
             x = block(x)
         x = self.model.transformer.ln_f(x)
-
-        return self.reward_head(x[:, -1, :])
+        return x[:, -1, :]
 
 
 def init_reward_model(config):
@@ -70,7 +77,7 @@ def init_reward_model(config):
         print("compiling the model... (takes a ~minute)")
         model = torch.compile(model)  # requires PyTorch 2.0
 
-    model = TensorDictModule(model, in_keys=["input"], out_keys=["reward"])
+    model = TensorDictModule(model, in_keys=["prompt", "response"], out_keys=["reward"])
     return model, model_kwargs
 
 
@@ -79,17 +86,19 @@ if __name__ == "__main__":
 
     # FIXME: this relative import breaks when running this file
     # below code gives an example of usage but is not easily runnable
-    from .utils import load_and_update_config
+    from utils import load_and_update_config
 
     enc = tiktoken.get_encoding("gpt2")
 
     HERE = Path(__file__).parent
     config = load_and_update_config(HERE.parent / "config" / "train_reward.yaml")
-    reward_model = init_reward_model(config)
+    reward_model, _ = init_reward_model(config)
 
-    prompt = enc.encode("this is a hard-coded prompt!")
+    prompt = enc.encode("To be, or not to be")
+    response = enc.encode("That is the question")
     # add singleton leading dimension to simulate batch dimension
-    prompt = torch.tensor(prompt)[None, :]
+    prompt = torch.tensor(prompt, device=config["device"])[None, :]
+    response = torch.tensor(response, device=config["device"])[None, :]
 
-    reward = reward_model.forward_reward(prompt)
+    reward = reward_model(prompt, response)
     print(reward)

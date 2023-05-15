@@ -24,6 +24,7 @@ class Collate(nn.Module):
 
 @tensorclass
 class PairwiseDataset:
+    prompt: torch.Tensor
     chosen: torch.Tensor
     rejected: torch.Tensor
     reward: Optional[torch.Tensor] = None
@@ -36,16 +37,16 @@ class PairwiseDataset:
         chosen = sample["chosen"]
         rejected = sample["rejected"]
 
-        chosen = "\n".join([prompt, chosen])
-        rejected = "\n".join([prompt, rejected])
-
+        prompt = enc.encode(
+            f"<|startoftext|>{prompt}<|endoftext|>", allowed_special="all"
+        )[-max_length:]
         chosen = enc.encode(
-            "<|startoftext|>" + chosen + "<|endoftext|>", allowed_special="all"
+            f"<|startoftext|>{chosen}<|endoftext|>", allowed_special="all"
         )[-max_length:]
         rejected = enc.encode(
-            "<|startoftext|>" + rejected + "<|endoftext|>", allowed_special="all"
+            f"<|startoftext|>{rejected}<|endoftext|>", allowed_special="all"
         )[-max_length:]
-        return chosen, rejected
+        return prompt, chosen, rejected
 
     @classmethod
     def from_dataset(cls, dataset, max_length):
@@ -60,29 +61,31 @@ class PairwiseDataset:
                 indices_to_skip.add(idx)
                 continue
 
-            chosen, rejected = cls._encode(sample, max_length)
+            # prompt, chosen, rejected = cls._encode(sample, max_length)
 
-            if chosen == rejected:
-                indices_to_skip.add(idx)
+            # if chosen == rejected:
+            #     print("skipping because identical response")
+            #     indices_to_skip.add(idx)
 
+        n_examples = len(dataset) - len(indices_to_skip)
         data = cls(
-            chosen=MemmapTensor(
-                len(dataset) - len(indices_to_skip), max_length, dtype=torch.int32
-            ),
-            rejected=MemmapTensor(
-                len(dataset) - len(indices_to_skip), max_length, dtype=torch.int32
-            ),
+            prompt=MemmapTensor(n_examples, max_length, dtype=torch.int32),
+            chosen=MemmapTensor(n_examples, max_length, dtype=torch.int32),
+            rejected=MemmapTensor(n_examples, max_length, dtype=torch.int32),
             batch_size=[len(dataset)],
         )
         i = 0
 
-        for idx, sample in tqdm(enumerate(dataset), total=len(dataset)):
+        for idx, sample in tqdm(enumerate(dataset), total=n_examples):
             if idx in indices_to_skip:
                 continue
 
-            chosen, rejected = cls._encode(sample, max_length)
+            prompt, chosen, rejected = cls._encode(sample, max_length)
 
             data[i] = cls(
+                prompt=F.pad(
+                    torch.Tensor(prompt), (max_length - len(prompt), 0), value=0
+                ),
                 chosen=F.pad(
                     torch.Tensor(chosen), (max_length - len(chosen), 0), value=0
                 ),
