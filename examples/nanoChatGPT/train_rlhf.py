@@ -34,12 +34,12 @@ def evaluate_agent(actor, env, episode_length=50, logger=None):
     reward = td.get(("next", "reward"))[-1, -1].item()
     if logger:
         string_to_write = (
-            "First query: \n"
+            "PROMPT: \n"
             f"{enc.decode(td.get(('next', 'prompt'))[-1, 0].tolist())},"
             f"reward={td.get(('next', 'reward'))[-1, 0].item(): 4.4f}"
             f"\n====================================================\n"
-            f"Last query: \n"
-            f"{enc.decode(td.get(('next', 'prompt'))[-1, -1].tolist())},"
+            f"RESPONSE: \n"
+            f"{enc.decode(td.get(('next', 'generated'))[-1, -1].tolist())},"
             f"reward={reward: 4.4f}"
         )
         logger.debug(string_to_write)

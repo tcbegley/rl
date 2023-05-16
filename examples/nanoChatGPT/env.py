@@ -20,16 +20,17 @@ HERE = Path(__file__).parent
 def _step(self, tensordict):
     self.step_num += 1
     prompt = tensordict.get("prompt")
+    generated = tensordict.get("generated")
 
     # perform the action
     action = tensordict.get("action")
 
     # The output must be written in a ``"next"`` entry
-    next_prompt = torch.hstack((prompt, action))[:, -self.block_size :]
+    next_generated = torch.hstack((generated, action.view(-1, 1)))[:, -self.block_size :]
 
     # compute the reward
     if self.step_num >= self.episode_length:
-        reward = self.reward_model(next_prompt)
+        reward = self.reward_model(prompt, next_generated)
         done = torch.ones_like(reward, dtype=torch.bool)
     else:
         reward = torch.zeros((*tensordict.batch_size, 1))
@@ -42,7 +43,14 @@ def _step(self, tensordict):
     assert self.done_spec.shape == done.shape, (self.batch_size, done.shape, done.dtype)
 
     out = TensorDict(
-        {"next": {"prompt": next_prompt, "reward": reward, "done": done}},
+        {
+            "next": {
+                "prompt": prompt,
+                "generated": next_generated,
+                "reward": reward,
+                "done": done,
+            },
+        },
         tensordict.shape,
     )
     return out
@@ -57,6 +65,7 @@ def _reset(self, tensordict):
     out = TensorDict(
         {
             "prompt": prompt,
+            "generated": torch.zeros_like(prompt),
             "done": torch.zeros((*prompt.shape[:-1], 1), dtype=torch.bool),
         },
         self.batch_size,
@@ -68,6 +77,12 @@ def _make_spec(self):
     # Under the hood, this will populate self.output_spec["observation"]
     self.observation_spec = CompositeSpec(
         prompt=BoundedTensorSpec(
+            minimum=0,
+            maximum=DEFAULT_VOCAB_SIZE,
+            shape=(*self.batch_size, self.config["block_size"]),
+            dtype=torch.int64,
+        ),
+        generated=BoundedTensorSpec(
             minimum=0,
             maximum=DEFAULT_VOCAB_SIZE,
             shape=(*self.batch_size, self.config["block_size"]),
