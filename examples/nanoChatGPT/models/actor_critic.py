@@ -24,7 +24,7 @@ class ActorCritic(ActorValueOperator):
         # extract last layer to be reused by actor
         actor_head = base_model.lm_head
         base_model.lm_head = nn.Identity()
-        base_model.requires_grad(False)
+        base_model.requires_grad_(False)
         base_model.eval()
         # TODO: compile base_model here?
 
