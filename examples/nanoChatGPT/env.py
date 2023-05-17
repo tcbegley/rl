@@ -69,6 +69,7 @@ def _step(self, tensordict):
         ],
         mode="+",
     )
+    reward *= self.step_num / self.config["episode_length"]  # scale reward wrt portion of the generated sentence
     if self.step_num >= self.episode_length:
         # reward = self.reward_model(prompt).unsqueeze(-1)
         done = torch.ones_like(reward, dtype=torch.bool)
@@ -91,11 +92,11 @@ def _step(self, tensordict):
 @torch.no_grad()
 def _reset(self, tensordict):
     self.step_num = 0
-    if not hasattr(self, "my_batch"):
-        batch = next(self.dataloader)
-        self.my_batch = batch
+    batch = next(self.dataloader)
+    if not hasattr(self, "my_prompt"):
+        self.my_prompt = batch.prompt[-1]
     else:
-        batch = self.my_batch
+        batch.prompt[-1] = self.my_prompt
 
     prompt = batch.prompt[:, -self.block_size :]
     out = TensorDict(

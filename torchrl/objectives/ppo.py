@@ -433,6 +433,15 @@ class ClipPPOLoss(PPOLoss):
             lw = log_weight.squeeze()
             ess = (2 * lw.logsumexp(0) - (2 * lw).logsumexp(0)).exp()
             batch = log_weight.shape[0]
+        
+        # if advantage.shape != log_weight.shape:
+        #     try:
+        #         log_weight = log_weight.view_as(advantage)
+        #     except Exception as err:
+        #         raise RuntimeError(
+        #             f"advantage.shape and log_weight.shape do not match (got {advantage.shape} "
+        #             f"and {log_weight.shape})"
+        #         ) from err
 
         gain1 = log_weight.exp() * advantage
 

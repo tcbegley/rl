@@ -35,13 +35,12 @@ def evaluate_agent(actor, env, episode_length=50, logger=None):
     reward = td.get(("next", "reward"))[-1, -1].item()
     if logger:
         string_to_write = (
-            "First query: \n"
-            f"{enc.decode(td.get(('next', 'prompt'))[-1, 0].tolist())},"
-            f"reward={td.get(('next', 'reward'))[-1, 0].item(): 4.4f}"
-            f"\n====================================================\n"
-            f"Last query: \n"
-            f"{enc.decode(td.get(('next', 'prompt'))[-1, -1].tolist())},"
-            f"reward={reward: 4.4f}"
+            "Query: \n"
+            f"{enc.decode(td.get(('next', 'prompt'))[-1, -1, :-episode_length].tolist())},\n"
+            f"Response: \n"
+            f"{enc.decode(td.get(('next', 'prompt'))[-1, -1, -episode_length:].tolist())},\n"
+            f"reward={reward: 4.4f}\n"
+            f"====================================================\n"
         )
         logger.debug(string_to_write)
     return reward
@@ -149,7 +148,6 @@ def main():
     )
     pbar = tqdm.tqdm(total=total_frames)
     for i, td in enumerate(collector):
-        start_time = time.time()
         rewards.append(td.get(("next", "reward")).mean().cpu().item())
         reward_logger.debug(rewards[-1])
 
