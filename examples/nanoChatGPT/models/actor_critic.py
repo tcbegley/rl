@@ -35,7 +35,6 @@ class ActorCritic(ActorValueOperator):
         # extract last layer to be reused by actor
         actor_head = deepcopy(base_model.lm_head)
         base_model.lm_head = nn.Identity()
-
         # TODO: compile base_model here?
 
         # critic network
