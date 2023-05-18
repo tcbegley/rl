@@ -74,6 +74,9 @@ def main():
 
     # ######## INIT MODELS ########
     actor, critic, critic_head = init_actor_critic(config)
+    actor2 = deepcopy(actor)
+    actor2.eval()
+    actor2.requires_grad_(False)
     actor.eval()  # deactivate dropout on all modules
     critic.eval()
 
@@ -105,7 +108,7 @@ def main():
 
     # Environment
     env = RLHFEnv(
-        get_reward=get_reward_factory(config), config=config, dataloader=train_loader
+        get_reward=get_reward_factory(config), config=config, dataloader=train_loader, ref_model=actor2
     )
 
     # Test Environment
@@ -116,7 +119,8 @@ def main():
     test_env = RLHFEnv(
         get_reward=get_reward_factory(test_config),
         config=test_config,
-        dataloader=train_loader_test
+        dataloader=train_loader_test,
+        ref_model=actor2
     )
 
     # ######## TRAINING LOOP ########

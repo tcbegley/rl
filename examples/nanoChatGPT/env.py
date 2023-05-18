@@ -70,6 +70,14 @@ def _step(self, tensordict):
         mode="+",
     )
     reward *= self.step_num / self.config["episode_length"]  # scale reward wrt portion of the generated sentence
+
+    # compute KL divergence component to avoid diverging too much from original model
+    if self.ref_model:
+        logits = tensordict.get("sample_log_prob")
+        ref_logits = self.ref_model(prompt)
+        kl_penalty = self.kl_th * (logits - ref_logits).mean(-1).unsqueeze(-1)
+    
+    reward -= kl_penalty 
     if self.step_num >= self.episode_length:
         # reward = self.reward_model(prompt).unsqueeze(-1)
         done = torch.ones_like(reward, dtype=torch.bool)
@@ -147,7 +155,7 @@ def _set_seed(self, seed: Optional[int]):
 class RLHFEnv(EnvBase):
     batch_locked = False
 
-    def __init__(self, get_reward=None, config=None, dataloader=None, seed=None):
+    def __init__(self, get_reward=None, config=None, dataloader=None, seed=None, ref_model=None):
         # if td_params is None:
         #     td_params = self.gen_params()
         batch_size = config["batch_size"]
@@ -165,6 +173,9 @@ class RLHFEnv(EnvBase):
         if seed is None:
             seed = torch.empty((), dtype=torch.int64).random_().item()
         self.step_num = 0
+        self.ref_model = ref_model
+        self.ref_model.select_out_keys(["sample_log_prob"])
+        self.kl_th = 1
         # self.set_seed(seed)
 
     # Helpers: _make_step and gen_params
