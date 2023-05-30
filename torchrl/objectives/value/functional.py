@@ -2,10 +2,13 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
+
+import math
 from functools import wraps
 from typing import Optional, Tuple, Union
 
 import torch
+
 from tensordict import MemmapTensor
 
 __all__ = [
@@ -31,6 +34,10 @@ from torchrl.objectives.value.utils import (
     _split_and_pad_sequence,
 )
 
+SHAPE_ERR = (
+    "All input tensors (value, reward and done states) must share a unique shape."
+)
+
 
 def _transpose_time(fun):
     """Checks the time_dim argument of the function to allow for any dim.
@@ -38,22 +45,60 @@ def _transpose_time(fun):
     If not -2, makes a transpose of all the multi-dim input tensors to bring
     time at -2, and does the opposite transform for the outputs.
     """
+    ERROR = (
+        "The tensor shape and the time dimension are not compatible: "
+        "got {} and time_dim={}."
+    )
 
     @wraps(fun)
     def transposed_fun(*args, time_dim=-2, **kwargs):
         def transpose_tensor(tensor):
-            if isinstance(tensor, (torch.Tensor, MemmapTensor)) and tensor.ndim >= 2:
-                tensor = tensor.transpose(time_dim, -2)
-            return tensor
+            if (
+                not isinstance(tensor, (torch.Tensor, MemmapTensor))
+                or tensor.numel() <= 1
+            ):
+                return tensor, False
+            if time_dim < 0:
+                timedim = tensor.ndim + time_dim
+            else:
+                timedim = time_dim
+            if timedim < 0 or timedim >= tensor.ndim:
+                raise RuntimeError(ERROR.format(tensor.shape, timedim))
+            if tensor.ndim >= 2:
+                single_dim = False
+                tensor = tensor.transpose(timedim, -2)
+            elif tensor.ndim == 1 and timedim == 0:
+                single_dim = True
+                tensor = tensor.unsqueeze(-1)
+            else:
+                raise RuntimeError(ERROR.format(tensor.shape, timedim))
+            return tensor, single_dim
 
         if time_dim != -2:
-            args = [transpose_tensor(arg) for arg in args]
-            kwargs = {k: transpose_tensor(item) for k, item in kwargs.items()}
+            args, single_dim = zip(*(transpose_tensor(arg) for arg in args))
+            single_dim = any(single_dim)
+            for k, item in kwargs.items():
+                item, sd = transpose_tensor(item)
+                single_dim = single_dim or sd
+                kwargs[k] = item
             out = fun(*args, time_dim=-2, **kwargs)
             if isinstance(out, torch.Tensor):
-                return transpose_tensor(out)
-            return tuple(transpose_tensor(_out) for _out in out)
-        return fun(*args, time_dim=time_dim, **kwargs)
+                out = transpose_tensor(out)[0]
+                if single_dim:
+                    out = out.squeeze(-2)
+                return out
+            if single_dim:
+                return tuple(transpose_tensor(_out)[0].squeeze(-2) for _out in out)
+            return tuple(transpose_tensor(_out)[0] for _out in out)
+        out = fun(*args, time_dim=time_dim, **kwargs)
+        if isinstance(out, tuple):
+            for _out in out:
+                if _out.ndim < 2:
+                    raise RuntimeError(ERROR.format(_out.shape, time_dim))
+        else:
+            if out.ndim < 2:
+                raise RuntimeError(ERROR.format(out.shape, time_dim))
+        return out
 
     return transposed_fun
 
@@ -92,27 +137,22 @@ def generalized_advantage_estimate(
 
     """
     if not (next_state_value.shape == state_value.shape == reward.shape == done.shape):
-        raise RuntimeError(
-            "All input tensors (value, reward and done states) must share a unique shape."
-        )
+        raise RuntimeError(SHAPE_ERR)
     dtype = next_state_value.dtype
     device = state_value.device
-    lastdim = next_state_value.shape[-1]
 
-    not_done = 1 - done.to(dtype)
-    *batch_size, time_steps = not_done.shape[:-1]
+    not_done = (~done).int()
+    *batch_size, time_steps, lastdim = not_done.shape
     advantage = torch.empty(
         *batch_size, time_steps, lastdim, device=device, dtype=dtype
     )
     prev_advantage = 0
+    gnotdone = gamma * not_done
+    delta = reward + (gnotdone * next_state_value) - state_value
+    discount = lmbda * gnotdone
     for t in reversed(range(time_steps)):
-        delta = (
-            reward[..., t, :]
-            + (gamma * next_state_value[..., t, :] * not_done[..., t, :])
-            - state_value[..., t, :]
-        )
-        prev_advantage = advantage[..., t, :] = delta + (
-            gamma * lmbda * prev_advantage * not_done[..., t, :]
+        prev_advantage = advantage[..., t, :] = delta[..., t, :] + (
+            prev_advantage * discount[..., t, :]
         )
 
     value_target = advantage + state_value
@@ -127,6 +167,7 @@ def _fast_vec_gae(
     done: torch.Tensor,
     gamma: float,
     lmbda: float,
+    thr: float = 1e-7,
 ):
     """Fast vectorized Generalized Advantage Estimate when gamma and lmbda are scalars.
 
@@ -140,9 +181,12 @@ def _fast_vec_gae(
         done (torch.Tensor): a [B, T] boolean tensor containing the done states
         gamma (scalar): the gamma decay (trajectory discount)
         lmbda (scalar): the lambda decay (exponential mean discount)
+        thr (float): threshold for the filter. Below this limit, components will ignored.
+            Defaults to 1e-7.
 
     All tensors (values, reward and done) must have shape
     ``[*Batch x TimeSteps x F]``, with ``F`` feature dimensions.
+
     """
     # _gen_num_per_traj and _split_and_pad_sequence need
     # time dimension at last position
@@ -152,20 +196,26 @@ def _fast_vec_gae(
     next_state_value = next_state_value.transpose(-2, -1)
 
     gammalmbda = gamma * lmbda
-    not_done = 1 - done.int()
+    not_done = (~done).int()
     td0 = reward + not_done * gamma * next_state_value - state_value
 
     num_per_traj = _get_num_per_traj(done)
-    td0_flat = _split_and_pad_sequence(td0, num_per_traj)
+    td0_flat, mask = _split_and_pad_sequence(td0, num_per_traj, return_mask=True)
 
-    gammalmbdas = torch.ones_like(td0_flat[0])
+    if not isinstance(gammalmbda, torch.Tensor):
+        gammalmbda_log = math.log(gammalmbda)
+    else:
+        gammalmbda_log = gammalmbda.log().item()
+    lim = int(math.log(thr) / gammalmbda_log)
+    gammalmbdas = torch.ones_like(td0_flat[0][:lim])
+
     gammalmbdas[1:] = gammalmbda
     gammalmbdas[1:] = gammalmbdas[1:].cumprod(0)
     gammalmbdas = gammalmbdas.unsqueeze(-1)
 
     advantage = _custom_conv1d(td0_flat.unsqueeze(1), gammalmbdas)
     advantage = advantage.squeeze(1)
-    advantage = _inv_pad_sequence(advantage, num_per_traj).view_as(reward)
+    advantage = advantage[mask].view_as(reward)
 
     value_target = advantage + state_value
 
@@ -204,11 +254,9 @@ def vec_generalized_advantage_estimate(
 
     """
     if not (next_state_value.shape == state_value.shape == reward.shape == done.shape):
-        raise RuntimeError(
-            "All input tensors (value, reward and done states) must share a unique shape."
-        )
+        raise RuntimeError(SHAPE_ERR)
     dtype = state_value.dtype
-    not_done = 1 - done.to(dtype)
+    not_done = (~done).to(dtype)
     *batch_size, time_steps, lastdim = not_done.shape
 
     value = gamma * lmbda
@@ -292,9 +340,7 @@ def td0_advantage_estimate(
 
     """
     if not (next_state_value.shape == state_value.shape == reward.shape == done.shape):
-        raise RuntimeError(
-            "All input tensors (value, reward and done states) must share a unique shape."
-        )
+        raise RuntimeError(SHAPE_ERR)
     returns = td0_return_estimate(gamma, next_state_value, reward, done)
     advantage = returns - state_value
     return advantage
@@ -323,10 +369,8 @@ def td0_return_estimate(
 
     """
     if not (next_state_value.shape == reward.shape == done.shape):
-        raise RuntimeError(
-            "All input tensors (value, reward and done states) must share a unique shape."
-        )
-    not_done = 1 - done.to(next_state_value.dtype)
+        raise RuntimeError(SHAPE_ERR)
+    not_done = (~done).int()
     advantage = reward + gamma * not_done * next_state_value
     return advantage
 
@@ -380,10 +424,8 @@ def td1_return_estimate(
 
     """
     if not (next_state_value.shape == reward.shape == done.shape):
-        raise RuntimeError(
-            "All input tensors (value, reward and done states) must share a unique shape."
-        )
-    not_done = 1 - done.to(next_state_value.dtype)
+        raise RuntimeError(SHAPE_ERR)
+    not_done = (~done).int()
 
     returns = torch.empty_like(next_state_value)
 
@@ -463,9 +505,7 @@ def td1_advantage_estimate(
 
     """
     if not (next_state_value.shape == state_value.shape == reward.shape == done.shape):
-        raise RuntimeError(
-            "All input tensors (value, reward and done states) must share a unique shape."
-        )
+        raise RuntimeError(SHAPE_ERR)
     if not state_value.shape == next_state_value.shape:
         raise RuntimeError("shape of state_value and next_state_value must match")
     returns = td1_return_estimate(
@@ -574,9 +614,7 @@ def vec_td1_advantage_estimate(
 
     """
     if not (next_state_value.shape == state_value.shape == reward.shape == done.shape):
-        raise RuntimeError(
-            "All input tensors (value, reward and done states) must share a unique shape."
-        )
+        raise RuntimeError(SHAPE_ERR)
     return (
         vec_td1_return_estimate(
             gamma, next_state_value, reward, done, rolling_gamma, time_dim=time_dim
@@ -636,11 +674,9 @@ def td_lambda_return_estimate(
 
     """
     if not (next_state_value.shape == reward.shape == done.shape):
-        raise RuntimeError(
-            "All input tensors (value, reward and done states) must share a unique shape."
-        )
+        raise RuntimeError(SHAPE_ERR)
 
-    not_done = 1 - done.to(next_state_value.dtype)
+    not_done = (~done).int()
 
     returns = torch.empty_like(next_state_value)
 
@@ -735,9 +771,7 @@ def td_lambda_advantage_estimate(
 
     """
     if not (next_state_value.shape == state_value.shape == reward.shape == done.shape):
-        raise RuntimeError(
-            "All input tensors (value, reward and done states) must share a unique shape."
-        )
+        raise RuntimeError(SHAPE_ERR)
     if not state_value.shape == next_state_value.shape:
         raise RuntimeError("shape of state_value and next_state_value must match")
     returns = td_lambda_return_estimate(
@@ -796,9 +830,7 @@ def vec_td_lambda_return_estimate(
 
     """
     if not (next_state_value.shape == reward.shape == done.shape):
-        raise RuntimeError(
-            "All input tensors (value, reward and done states) must share a unique shape."
-        )
+        raise RuntimeError(SHAPE_ERR)
     shape = next_state_value.shape
 
     *batch, T, lastdim = shape
@@ -813,7 +845,7 @@ def vec_td_lambda_return_estimate(
 
     """Vectorized version of td_lambda_advantage_estimate"""
     device = reward.device
-    not_done = 1 - done.to(next_state_value.dtype)
+    not_done = (~done).int()
 
     first_below_thr_gamma = None
 
@@ -951,9 +983,7 @@ def vec_td_lambda_advantage_estimate(
 
     """
     if not (next_state_value.shape == state_value.shape == reward.shape == done.shape):
-        raise RuntimeError(
-            "All input tensors (value, reward and done states) must share a unique shape."
-        )
+        raise RuntimeError(SHAPE_ERR)
     return (
         vec_td_lambda_return_estimate(
             gamma,
@@ -971,13 +1001,6 @@ def vec_td_lambda_advantage_estimate(
 ########################################################################
 # Reward to go
 # ------------
-
-
-def _get_num_per_traj_init(is_init):
-    """Like _get_num_per_traj, but with is_init signal."""
-    done = torch.zeros_like(is_init)
-    done[..., :-1][is_init[..., 1:]] = 1
-    return _get_num_per_traj(done)
 
 
 @_transpose_time
