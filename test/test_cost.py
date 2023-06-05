@@ -8,6 +8,7 @@ import functools
 import operator
 import warnings
 from copy import deepcopy
+from dataclasses import asdict, dataclass
 
 from packaging import version as pack_version
 from tensordict.nn import InteractionType
@@ -139,7 +140,60 @@ def get_devices():
     return devices
 
 
-class TestDQN:
+class LossModuleTestBase:
+    def tensordict_keys_test(self, loss_fn, default_keys, td_est=None):
+        self.tensordict_keys_unknown_key_test(loss_fn)
+        self.tensordict_keys_default_values_test(loss_fn, default_keys)
+        self.tensordict_set_keys_test(loss_fn, default_keys)
+
+    def tensordict_keys_unknown_key_test(self, loss_fn):
+        """Test that exception is raised if an unknown key is set via .set_keys()"""
+        test_fn = deepcopy(loss_fn)
+
+        with pytest.raises(ValueError):
+            test_fn.set_keys(unknown_key="test2")
+
+    def tensordict_keys_default_values_test(self, loss_fn, default_keys):
+        test_fn = deepcopy(loss_fn)
+
+        for key, value in default_keys.items():
+            assert getattr(test_fn.tensor_keys, key) == value
+
+    def tensordict_set_keys_test(self, loss_fn, default_keys):
+        """Test setting of tensordict keys via .set_keys()"""
+        test_fn = deepcopy(loss_fn)
+
+        new_key = "test1"
+        for key, _ in default_keys.items():
+            test_fn.set_keys(**{key: new_key})
+            assert getattr(test_fn.tensor_keys, key) == new_key
+
+        test_fn = deepcopy(loss_fn)
+        test_fn.set_keys(**{key: new_key for key, _ in default_keys.items()})
+
+        for key, _ in default_keys.items():
+            assert getattr(test_fn.tensor_keys, key) == new_key
+
+    def set_advantage_keys_through_loss_test(
+        self, loss_fn, td_est, loss_advantage_key_mapping
+    ):
+        key_mapping = loss_advantage_key_mapping
+        test_fn = deepcopy(loss_fn)
+
+        new_keys = {}
+        for loss_key, (_, new_key) in key_mapping.items():
+            new_keys[loss_key] = new_key
+
+        test_fn.set_keys(**new_keys)
+        test_fn.make_value_estimator(td_est)
+
+        for _, (advantage_key, new_key) in key_mapping.items():
+            assert (
+                getattr(test_fn.value_estimator.tensor_keys, advantage_key) == new_key
+            )
+
+
+class TestDQN(LossModuleTestBase):
     seed = 0
 
     def _create_mock_actor(
@@ -150,6 +204,7 @@ class TestDQN:
         action_dim=4,
         device="cpu",
         is_nn_module=False,
+        action_value_key=None,
     ):
         # Actor
         if action_spec_type == "one_hot":
@@ -175,6 +230,7 @@ class TestDQN:
             ),
             action_space=action_spec_type,
             module=module,
+            action_value_key=action_value_key,
         ).to(device)
         return actor
 
@@ -188,6 +244,7 @@ class TestDQN:
         vmin=1,
         vmax=5,
         is_nn_module=False,
+        action_value_key="action_value",
     ):
         # Actor
         var_nums = None
@@ -219,6 +276,7 @@ class TestDQN:
             support=support,
             action_space=action_spec_type,
             var_nums=var_nums,
+            action_value_key=action_value_key,
         )
         return actor
 
@@ -230,6 +288,8 @@ class TestDQN:
         action_dim=4,
         atoms=None,
         device="cpu",
+        action_key="action",
+        action_value_key="action_value",
     ):
         # create a tensordict
         obs = torch.randn(batch, obs_dim)
@@ -257,8 +317,8 @@ class TestDQN:
                     "done": done,
                     "reward": reward,
                 },
-                "action": action,
-                "action_value": action_value,
+                action_key: action,
+                action_value_key: action_value,
             },
             device=device,
         )
@@ -336,7 +396,7 @@ class TestDQN:
             loss_fn.make_value_estimator(td_est)
         with _check_td_steady(td):
             loss = loss_fn(td)
-        assert loss_fn.priority_key in td.keys()
+        assert loss_fn.tensor_keys.priority in td.keys()
 
         sum([item for _, item in loss.items()]).backward()
         assert torch.nn.utils.clip_grad.clip_grad_norm_(actor.parameters(), 1.0) > 0.0
@@ -377,7 +437,7 @@ class TestDQN:
 
         with _check_td_steady(ms_td):
             loss_ms = loss_fn(ms_td)
-        assert loss_fn.priority_key in ms_td.keys()
+        assert loss_fn.tensor_keys.priority in ms_td.keys()
 
         with torch.no_grad():
             loss = loss_fn(td)
@@ -410,6 +470,50 @@ class TestDQN:
             p.data += torch.randn_like(p)
         assert all((p1 != p2).all() for p1, p2 in zip(parameters, actor.parameters()))
 
+    def test_dqn_tensordict_keys(self):
+        torch.manual_seed(self.seed)
+        action_spec_type = "one_hot"
+        actor = self._create_mock_actor(action_spec_type=action_spec_type)
+        loss_fn = DQNLoss(actor)
+
+        default_keys = {
+            "priority": "td_error",
+            "action_value": "action_value",
+            "action": "action",
+        }
+
+        self.tensordict_keys_test(loss_fn, default_keys=default_keys)
+
+    @pytest.mark.parametrize("action_spec_type", ("categorical", "one_hot"))
+    @pytest.mark.parametrize(
+        "td_est", [ValueEstimators.TD1, ValueEstimators.TD0, ValueEstimators.TDLambda]
+    )
+    def test_dqn_tensordict_run(self, action_spec_type, td_est):
+        torch.manual_seed(self.seed)
+        tensor_keys = {
+            "action_value": "action_value_test",
+            "action": "action_test",
+            "priority": "priority_test",
+        }
+        actor = self._create_mock_actor(
+            action_spec_type=action_spec_type,
+            action_value_key=tensor_keys["action_value"],
+        )
+        td = self._create_mock_data_dqn(
+            action_spec_type=action_spec_type,
+            action_key=tensor_keys["action"],
+            action_value_key=tensor_keys["action_value"],
+        )
+
+        loss_fn = DQNLoss(actor, loss_function="l2")
+        loss_fn.set_keys(**tensor_keys)
+
+        if td_est is not None:
+            loss_fn.make_value_estimator(td_est)
+        with _check_td_steady(td):
+            _ = loss_fn(td)
+        assert loss_fn.tensor_keys.priority in td.keys()
+
     @pytest.mark.parametrize("atoms", range(4, 10))
     @pytest.mark.parametrize("delay_value", (False, True))
     @pytest.mark.parametrize("device", get_devices())
@@ -439,7 +543,7 @@ class TestDQN:
 
         with _check_td_steady(td):
             loss = loss_fn(td)
-        assert loss_fn.priority_key in td.keys()
+        assert loss_fn.tensor_keys.priority in td.keys()
 
         sum([item for _, item in loss.items()]).backward()
         assert torch.nn.utils.clip_grad.clip_grad_norm_(actor.parameters(), 1.0) > 0.0
@@ -463,8 +567,96 @@ class TestDQN:
             p.data += torch.randn_like(p)
         assert all((p1 != p2).all() for p1, p2 in zip(parameters, actor.parameters()))
 
+    def test_dqn_notensordict(self):
+        n_obs = 3
+        n_action = 4
+        action_spec = OneHotDiscreteTensorSpec(n_action)
+        value_network = nn.Linear(n_obs, n_action)  # a simple value model
+        dqn_loss = DQNLoss(value_network, action_space=action_spec)
+        # define data
+        observation = torch.randn(n_obs)
+        next_observation = torch.randn(n_obs)
+        action = action_spec.rand()
+        next_reward = torch.randn(1)
+        next_done = torch.zeros(1, dtype=torch.bool)
+        loss_val = dqn_loss(
+            observation=observation,
+            next_observation=next_observation,
+            next_reward=next_reward,
+            next_done=next_done,
+            action=action,
+        )
+        loss_val_td = dqn_loss(
+            TensorDict(
+                {
+                    "observation": observation,
+                    "next_observation": next_observation,
+                    "next_reward": next_reward,
+                    "next_done": next_done,
+                    "action": action,
+                },
+                [],
+            ).unflatten_keys("_")
+        )
+        torch.testing.assert_close(loss_val_td.get("loss"), loss_val)
 
-class TestDDPG:
+    def test_distributional_dqn_tensordict_keys(self):
+        torch.manual_seed(self.seed)
+        action_spec_type = "one_hot"
+        atoms = 2
+        gamma = 0.9
+        actor = self._create_mock_distributional_actor(
+            action_spec_type=action_spec_type, atoms=atoms
+        )
+
+        loss_fn = DistributionalDQNLoss(actor, gamma=gamma)
+
+        default_keys = {
+            "priority": "td_error",
+            "action_value": "action_value",
+            "action": "action",
+            "reward": "reward",
+            "done": "done",
+            "steps_to_next_obs": "steps_to_next_obs",
+        }
+
+        self.tensordict_keys_test(loss_fn, default_keys=default_keys)
+
+    @pytest.mark.parametrize("action_spec_type", ("categorical", "one_hot"))
+    @pytest.mark.parametrize("td_est", [ValueEstimators.TD0])
+    def test_distributional_dqn_tensordict_run(self, action_spec_type, td_est):
+        torch.manual_seed(self.seed)
+        atoms = 4
+        tensor_keys = {
+            "action_value": "action_value_test",
+            "action": "action_test",
+            "priority": "priority_test",
+        }
+        actor = self._create_mock_distributional_actor(
+            action_spec_type=action_spec_type,
+            atoms=atoms,
+            action_value_key=tensor_keys["action_value"],
+        )
+        td = self._create_mock_data_dqn(
+            action_spec_type=action_spec_type,
+            atoms=atoms,
+            action_key=tensor_keys["action"],
+            action_value_key=tensor_keys["action_value"],
+        )
+        loss_fn = DistributionalDQNLoss(actor, gamma=0.9)
+        loss_fn.set_keys(**tensor_keys)
+
+        loss_fn.make_value_estimator(td_est)
+
+        with _check_td_steady(td):
+            _ = loss_fn(td)
+        assert loss_fn.tensor_keys.priority in td.keys()
+
+
+@pytest.mark.skipif(
+    not _has_functorch, reason=f"functorch not installed: {FUNCTORCH_ERR}"
+)
+class TestDDPG(LossModuleTestBase):
     seed = 0
 
     def _create_mock_actor(self, batch=2, obs_dim=3, action_dim=4, device="cpu"):
@@ -479,7 +671,9 @@ class TestDDPG:
         )
         return actor.to(device)
 
-    def _create_mock_value(self, batch=2, obs_dim=3, action_dim=4, device="cpu"):
+    def _create_mock_value(
+        self, batch=2, obs_dim=3, action_dim=4, device="cpu", out_keys=None
+    ):
         # Actor
         class ValueClass(nn.Module):
             def __init__(self):
@@ -491,8 +685,7 @@ class TestDDPG:
 
         module = ValueClass()
         value = ValueOperator(
-            module=module,
-            in_keys=["observation", "action"],
+            module=module, in_keys=["observation", "action"], out_keys=out_keys
         )
         return value.to(device)
 
@@ -502,7 +695,14 @@ class TestDDPG:
         raise NotImplementedError
 
     def _create_mock_data_ddpg(
-        self, batch=8, obs_dim=3, action_dim=4, atoms=None, device="cpu"
+        self,
+        batch=8,
+        obs_dim=3,
+        action_dim=4,
+        atoms=None,
+        device="cpu",
+        reward_key="reward",
+        done_key="done",
     ):
         # create a tensordict
         obs = torch.randn(batch, obs_dim, device=device)
@@ -519,8 +719,8 @@ class TestDDPG:
                 "observation": obs,
                 "next": {
                     "observation": next_obs,
-                    "done": done,
-                    "reward": reward,
+                    done_key: done,
+                    reward_key: reward,
                 },
                 "action": action,
             },
@@ -529,7 +729,15 @@ class TestDDPG:
         return td
 
     def _create_seq_mock_data_ddpg(
-        self, batch=8, T=4, obs_dim=3, action_dim=4, atoms=None, device="cpu"
+        self,
+        batch=8,
+        T=4,
+        obs_dim=3,
+        action_dim=4,
+        atoms=None,
+        device="cpu",
+        reward_key="reward",
+        done_key="done",
     ):
         # create a tensordict
         total_obs = torch.randn(batch, T + 1, obs_dim, device=device)
@@ -550,8 +758,8 @@ class TestDDPG:
                 "observation": obs.masked_fill_(~mask.unsqueeze(-1), 0.0),
                 "next": {
                     "observation": next_obs.masked_fill_(~mask.unsqueeze(-1), 0.0),
-                    "done": done,
-                    "reward": reward.masked_fill_(~mask.unsqueeze(-1), 0.0),
+                    done_key: done,
+                    reward_key: reward.masked_fill_(~mask.unsqueeze(-1), 0.0),
                 },
                 "collector": {"mask": mask},
                 "action": action.masked_fill_(~mask.unsqueeze(-1), 0.0),
@@ -560,9 +768,6 @@ class TestDDPG:
         )
         return td
 
-    @pytest.mark.skipif(
-        not _has_functorch, reason=f"functorch not installed: {FUNCTORCH_ERR}"
-    )
     @pytest.mark.parametrize("device", get_available_devices())
     @pytest.mark.parametrize("delay_actor,delay_value", [(False, False), (True, True)])
     @pytest.mark.parametrize("td_est", list(ValueEstimators) + [None])
@@ -661,9 +866,6 @@ class TestDDPG:
             p.data += torch.randn_like(p)
         assert all((p1 != p2).all() for p1, p2 in zip(parameters, actor.parameters()))
 
-    @pytest.mark.skipif(
-        not _has_functorch, reason=f"functorch not installed: {FUNCTORCH_ERR}"
-    )
     @pytest.mark.parametrize("n", list(range(4)))
     @pytest.mark.parametrize("device", get_available_devices())
     @pytest.mark.parametrize("delay_actor,delay_value", [(False, False), (True, True)])
@@ -701,8 +903,102 @@ class TestDDPG:
         for p in parameters:
             assert p.grad.norm() > 0.0
 
+    @pytest.mark.parametrize(
+        "td_est", [ValueEstimators.TD1, ValueEstimators.TD0, ValueEstimators.TDLambda]
+    )
+    def test_ddpg_tensordict_keys(self, td_est):
+        actor = self._create_mock_actor()
+        value = self._create_mock_value()
+        loss_fn = DDPGLoss(
+            actor,
+            value,
+            loss_function="l2",
+        )
 
-class TestTD3:
+        default_keys = {
+            "reward": "reward",
+            "done": "done",
+            "state_action_value": "state_action_value",
+            "priority": "td_error",
+        }
+
+        self.tensordict_keys_test(
+            loss_fn,
+            default_keys=default_keys,
+            td_est=td_est,
+        )
+
+        value = self._create_mock_value(out_keys=["state_action_value_test"])
+        loss_fn = DDPGLoss(
+            actor,
+            value,
+            loss_function="l2",
+        )
+        key_mapping = {
+            "state_action_value": ("value", "state_action_value_test"),
+            "reward": ("reward", "reward2"),
+            "done": ("done", ("done", "test")),
+        }
+        self.set_advantage_keys_through_loss_test(loss_fn, td_est, key_mapping)
+
+    @pytest.mark.parametrize(
+        "td_est",
+        [ValueEstimators.TD0, ValueEstimators.TD1, ValueEstimators.TDLambda, None],
+    )
+    def test_ddpg_tensordict_run(self, td_est):
+        """Test DDPG loss module with non-default tensordict keys."""
+        torch.manual_seed(self.seed)
+        tensor_keys = {
+            "state_action_value": "state_action_value_test",
+            "priority": "td_error_test",
+            "reward": "reward_test",
+            "done": ("done", "test"),
+        }
+
+        actor = self._create_mock_actor()
+        value = self._create_mock_value(out_keys=[tensor_keys["state_action_value"]])
+        td = self._create_mock_data_ddpg(
+            reward_key="reward_test", done_key=("done", "test")
+        )
+        loss_fn = DDPGLoss(
+            actor,
+            value,
+            loss_function="l2",
+        )
+        loss_fn.set_keys(**tensor_keys)
+
+        if td_est is not None:
+            loss_fn.make_value_estimator(td_est)
+
+        with _check_td_steady(td):
+            _ = loss_fn(td)
+
+    def test_ddpg_notensordict(self):
+        torch.manual_seed(self.seed)
+        actor = self._create_mock_actor()
+        value = self._create_mock_value()
+        td = self._create_mock_data_ddpg()
+        loss = DDPGLoss(actor, value)
+        loss.make_value_estimator(ValueEstimators.TD1)
+
+        kwargs = {
+            "observation": td.get("observation"),
+            "next_reward": td.get(("next", "reward")),
+            "next_done": td.get(("next", "done")),
+            "action": td.get("action"),
+        }
+        td = TensorDict(kwargs, td.batch_size).unflatten_keys("_")
+
+        loss_val_td = loss(td)
+        loss_val = loss(**kwargs)
+        for i, key in enumerate(loss_val_td.keys()):
+            torch.testing.assert_close(loss_val_td.get(key), loss_val[i])
+
+
+@pytest.mark.skipif(
+    not _has_functorch, reason=f"functorch not installed: {FUNCTORCH_ERR}"
+)
+class TestTD3(LossModuleTestBase):
     seed = 0
 
     def _create_mock_actor(self, batch=2, obs_dim=3, action_dim=4, device="cpu"):
@@ -717,7 +1013,9 @@ class TestTD3:
         )
         return actor.to(device)
 
-    def _create_mock_value(self, batch=2, obs_dim=3, action_dim=4, device="cpu"):
+    def _create_mock_value(
+        self, batch=2, obs_dim=3, action_dim=4, device="cpu", out_keys=None
+    ):
         # Actor
         class ValueClass(nn.Module):
             def __init__(self):
@@ -731,6 +1029,7 @@ class TestTD3:
         value = ValueOperator(
             module=module,
             in_keys=["observation", "action"],
+            out_keys=out_keys,
         )
         return value.to(device)
 
@@ -806,6 +1105,7 @@ class TestTD3:
     @pytest.mark.parametrize("policy_noise", [0.1, 1.0])
     @pytest.mark.parametrize("noise_clip", [0.1, 1.0])
     @pytest.mark.parametrize("td_est", list(ValueEstimators) + [None])
+    @pytest.mark.parametrize("use_action_spec", [True, False])
     def test_td3(
         self,
         delay_actor,
@@ -814,14 +1114,23 @@ class TestTD3:
         policy_noise,
         noise_clip,
         td_est,
+        use_action_spec,
     ):
         torch.manual_seed(self.seed)
         actor = self._create_mock_actor(device=device)
         value = self._create_mock_value(device=device)
         td = self._create_mock_data_td3(device=device)
+        if use_action_spec:
+            action_spec = actor.spec
+            bounds = None
+        else:
+            bounds = (-1, 1)
+            action_spec = None
         loss_fn = TD3Loss(
             actor,
             value,
+            action_spec=action_spec,
+            bounds=bounds,
             loss_function="l2",
             policy_noise=policy_noise,
             noise_clip=noise_clip,
@@ -898,6 +1207,7 @@ class TestTD3:
         loss_fn = TD3Loss(
             actor,
             value,
+            action_spec=actor.spec,
             policy_noise=policy_noise,
             noise_clip=noise_clip,
             delay_qvalue=delay_qvalue,
@@ -914,7 +1224,7 @@ class TestTD3:
 
         with _check_td_steady(ms_td):
             loss_ms = loss_fn(ms_td)
-        assert loss_fn.priority_key in ms_td.keys()
+        assert loss_fn.tensor_keys.priority in ms_td.keys()
 
         with torch.no_grad():
             torch.manual_seed(0)  # log-prob is computed with a random action
@@ -975,9 +1285,70 @@ class TestTD3:
             p.data += torch.randn_like(p)
         assert all((p1 != p2).all() for p1, p2 in zip(parameters, actor.parameters()))
 
+    @pytest.mark.parametrize(
+        "td_est", [ValueEstimators.TD1, ValueEstimators.TD0, ValueEstimators.TDLambda]
+    )
+    def test_td3_tensordict_keys(self, td_est):
+        actor = self._create_mock_actor()
+        value = self._create_mock_value()
+        loss_fn = TD3Loss(
+            actor,
+            value,
+            action_spec=actor.spec,
+        )
 
+        default_keys = {
+            "priority": "td_error",
+            "state_action_value": "state_action_value",
+            "action": "action",
+        }
+
+        self.tensordict_keys_test(
+            loss_fn,
+            default_keys=default_keys,
+            td_est=td_est,
+        )
+
+        value = self._create_mock_value(out_keys=["state_action_value_test"])
+        loss_fn = DDPGLoss(
+            actor,
+            value,
+            loss_function="l2",
+        )
+        key_mapping = {"state_action_value": ("value", "state_action_value_test")}
+        self.set_advantage_keys_through_loss_test(loss_fn, td_est, key_mapping)
+
+    @pytest.mark.parametrize("spec", [True, False])
+    @pytest.mark.parametrize("bounds", [True, False])
+    def test_constructor(self, spec, bounds):
+        actor = self._create_mock_actor()
+        value = self._create_mock_value()
+        action_spec = actor.spec if spec else None
+        bounds = (-1, 1) if bounds else None
+        if (bounds is not None and action_spec is not None) or (
+            bounds is None and action_spec is None
+        ):
+            with pytest.raises(ValueError, match="but not both"):
+                TD3Loss(
+                    actor,
+                    value,
+                    action_spec=action_spec,
+                    bounds=bounds,
+                )
+            return
+        TD3Loss(
+            actor,
+            value,
+            action_spec=action_spec,
+            bounds=bounds,
+        )
+
+
+@pytest.mark.skipif(
+    not _has_functorch, reason=f"functorch not installed: {FUNCTORCH_ERR}"
+)
 @pytest.mark.parametrize("version", [1, 2])
-class TestSAC:
+class TestSAC(LossModuleTestBase):
     seed = 0
 
     def _create_mock_actor(self, batch=2, obs_dim=3, action_dim=4, device="cpu"):
@@ -1083,9 +1454,6 @@ class TestSAC:
         )
         return td
 
-    @pytest.mark.skipif(
-        not _has_functorch, reason=f"functorch not installed: {FUNCTORCH_ERR}"
-    )
     @pytest.mark.parametrize("delay_value", (True, False))
     @pytest.mark.parametrize("delay_actor", (True, False))
     @pytest.mark.parametrize("delay_qvalue", (True, False))
@@ -1141,7 +1509,7 @@ class TestSAC:
 
         with _check_td_steady(td):
             loss = loss_fn(td)
-        assert loss_fn.priority_key in td.keys()
+        assert loss_fn.tensor_keys.priority in td.keys()
 
         # check that losses are independent
         for k in loss.keys():
@@ -1241,9 +1609,6 @@ class TestSAC:
         for name, p in named_parameters:
             assert p.grad.norm() > 0.0, f"parameter {name} has a null gradient"
 
-    @pytest.mark.skipif(
-        not _has_functorch, reason=f"functorch not installed: {FUNCTORCH_ERR}"
-    )
     @pytest.mark.parametrize("n", list(range(4)))
     @pytest.mark.parametrize("delay_value", (True, False))
     @pytest.mark.parametrize("delay_actor", (True, False))
@@ -1298,7 +1663,7 @@ class TestSAC:
         np.random.seed(0)
         with _check_td_steady(ms_td):
             loss_ms = loss_fn(ms_td)
-        assert loss_fn.priority_key in ms_td.keys()
+        assert loss_fn.tensor_keys.priority in ms_td.keys()
 
         with torch.no_grad():
             torch.manual_seed(0)  # log-prob is computed with a random action
@@ -1390,8 +1755,56 @@ class TestSAC:
             p.data += torch.randn_like(p)
         assert all((p1 != p2).all() for p1, p2 in zip(parameters, actor.parameters()))
 
+    @pytest.mark.parametrize(
+        "td_est", [ValueEstimators.TD1, ValueEstimators.TD0, ValueEstimators.TDLambda]
+    )
+    def test_sac_tensordict_keys(self, td_est, version):
+        td = self._create_mock_data_sac()
 
-class TestDiscreteSAC:
+        actor = self._create_mock_actor()
+        qvalue = self._create_mock_qvalue()
+        if version == 1:
+            value = self._create_mock_value()
+        else:
+            value = None
+
+        loss_fn = SACLoss(
+            actor_network=actor,
+            qvalue_network=qvalue,
+            value_network=value,
+            num_qvalue_nets=2,
+            loss_function="l2",
+        )
+
+        default_keys = {
+            "priority": "td_error",
+            "value": "state_value",
+            "state_action_value": "state_action_value",
+            "action": "action",
+            "log_prob": "_log_prob",
+        }
+
+        self.tensordict_keys_test(
+            loss_fn,
+            default_keys=default_keys,
+            td_est=td_est,
+        )
+
+        value = self._create_mock_value()
+        loss_fn = SACLoss(
+            actor,
+            value,
+            loss_function="l2",
+        )
+
+        key_mapping = {"value": ("value", "state_value_test")}
+        self.set_advantage_keys_through_loss_test(loss_fn, td_est, key_mapping)
+
+
+@pytest.mark.skipif(
+    not _has_functorch, reason=f"functorch not installed: {FUNCTORCH_ERR}"
+)
+class TestDiscreteSAC(LossModuleTestBase):
     seed = 0
 
     def _create_mock_actor(self, batch=2, obs_dim=3, action_dim=4, device="cpu"):
@@ -1500,9 +1913,6 @@ class TestDiscreteSAC:
         )
         return td
 
-    @pytest.mark.skipif(
-        not _has_functorch, reason=f"functorch not installed: {FUNCTORCH_ERR}"
-    )
     @pytest.mark.parametrize("delay_qvalue", (True, False))
     @pytest.mark.parametrize("num_qvalue", [2])
     @pytest.mark.parametrize("device", get_available_devices())
@@ -1548,7 +1958,7 @@ class TestDiscreteSAC:
 
         with _check_td_steady(td):
             loss = loss_fn(td)
-        assert loss_fn.priority_key in td.keys()
+        assert loss_fn.tensor_keys.priority in td.keys()
 
         # check that losses are independent
         for k in loss.keys():
@@ -1608,9 +2018,6 @@ class TestDiscreteSAC:
         for name, p in named_parameters:
             assert p.grad.norm() > 0.0, f"parameter {name} has a null gradient"
 
-    @pytest.mark.skipif(
-        not _has_functorch, reason=f"functorch not installed: {FUNCTORCH_ERR}"
-    )
     @pytest.mark.parametrize("n", list(range(4)))
     @pytest.mark.parametrize("delay_qvalue", (True, False))
     @pytest.mark.parametrize("num_qvalue", [2])
@@ -1656,7 +2063,7 @@ class TestDiscreteSAC:
         np.random.seed(0)
         with _check_td_steady(ms_td):
             loss_ms = loss_fn(ms_td)
-        assert loss_fn.priority_key in ms_td.keys()
+        assert loss_fn.tensor_keys.priority in ms_td.keys()
 
         with torch.no_grad():
             torch.manual_seed(0)  # log-prob is computed with a random action
@@ -1725,11 +2132,47 @@ class TestDiscreteSAC:
             p.data += torch.randn_like(p)
         assert all((p1 != p2).all() for p1, p2 in zip(parameters, actor.parameters()))
 
+    @pytest.mark.parametrize(
+        "td_est", [ValueEstimators.TD1, ValueEstimators.TD0, ValueEstimators.TDLambda]
+    )
+    def test_discrete_sac_tensordict_keys(self, td_est):
+        actor = self._create_mock_actor()
+        qvalue = self._create_mock_qvalue()
+
+        loss_fn = DiscreteSACLoss(
+            actor_network=actor,
+            qvalue_network=qvalue,
+            num_actions=actor.spec["action"].space.n,
+            loss_function="l2",
+        )
+
+        default_keys = {
+            "priority": "td_error",
+            "value": "state_value",
+            "action": "action",
+        }
+        self.tensordict_keys_test(
+            loss_fn,
+            default_keys=default_keys,
+            td_est=td_est,
+        )
+
+        qvalue = self._create_mock_qvalue()
+        loss_fn = DiscreteSACLoss(
+            actor_network=actor,
+            qvalue_network=qvalue,
+            num_actions=actor.spec["action"].space.n,
+            loss_function="l2",
+        )
+
+        key_mapping = {"value": ("value", "state_value_test")}
+        self.set_advantage_keys_through_loss_test(loss_fn, td_est, key_mapping)
+
 
 @pytest.mark.skipif(
     not _has_functorch, reason=f"functorch not installed: {FUNCTORCH_ERR}"
 )
-class TestREDQ:
+class TestREDQ(LossModuleTestBase):
     seed = 0
 
     def _create_mock_actor(self, batch=2, obs_dim=3, action_dim=4, device="cpu"):
@@ -1891,7 +2334,7 @@ class TestREDQ:
             loss = loss_fn(td)
 
         # check td is left untouched
-        assert loss_fn.priority_key in td.keys()
+        assert loss_fn.tensor_keys.priority in td.keys()
 
         # check that losses are independent
         for k in loss.keys():
@@ -1973,7 +2416,7 @@ class TestREDQ:
         )
 
         if delay_qvalue:
-            target_updater = SoftUpdate(loss_fn)
+            target_updater = SoftUpdate(loss_fn, tau=0.05)
 
         with _check_td_steady(td):
             loss = loss_fn(td)
@@ -2016,7 +2459,7 @@ class TestREDQ:
             loss_fn.zero_grad()
 
         # check td is left untouched
-        assert loss_fn.priority_key in td.keys()
+        assert loss_fn.tensor_keys.priority in td.keys()
 
         sum([item for _, item in loss.items()]).backward()
         named_parameters = list(loss_fn.named_parameters())
@@ -2139,7 +2582,7 @@ class TestREDQ:
 
         with _check_td_steady(ms_td):
             loss_ms = loss_fn(ms_td)
-        assert loss_fn.priority_key in ms_td.keys()
+        assert loss_fn.tensor_keys.priority in ms_td.keys()
 
         with torch.no_grad():
             torch.manual_seed(0)  # log-prob is computed with a random action
@@ -2199,8 +2642,44 @@ class TestREDQ:
             p.data += torch.randn_like(p)
         assert all((p1 != p2).all() for p1, p2 in zip(parameters, actor.parameters()))
 
+    @pytest.mark.parametrize(
+        "td_est", [ValueEstimators.TD1, ValueEstimators.TD0, ValueEstimators.TDLambda]
+    )
+    def test_redq_tensordict_keys(self, td_est):
+        actor = self._create_mock_actor()
+        qvalue = self._create_mock_qvalue()
 
-class TestPPO:
+        loss_fn = REDQLoss(
+            actor_network=actor,
+            qvalue_network=qvalue,
+            loss_function="l2",
+        )
+
+        default_keys = {
+            "priority": "td_error",
+            "action": "action",
+            "value": "state_value",
+            "sample_log_prob": "sample_log_prob",
+            "state_action_value": "state_action_value",
+        }
+        self.tensordict_keys_test(
+            loss_fn,
+            default_keys=default_keys,
+            td_est=td_est,
+        )
+
+        qvalue = self._create_mock_qvalue()
+        loss_fn = REDQLoss(
+            actor_network=actor,
+            qvalue_network=qvalue,
+            loss_function="l2",
+        )
+
+        key_mapping = {"value": ("value", "state_value_test")}
+        self.set_advantage_keys_through_loss_test(loss_fn, td_est, key_mapping)
+
+
+class TestPPO(LossModuleTestBase):
     seed = 0
 
     def _create_mock_actor(self, batch=2, obs_dim=3, action_dim=4, device="cpu"):
@@ -2218,11 +2697,14 @@ class TestPPO:
         )
         return actor.to(device)
 
-    def _create_mock_value(self, batch=2, obs_dim=3, action_dim=4, device="cpu"):
+    def _create_mock_value(
+        self, batch=2, obs_dim=3, action_dim=4, device="cpu", out_keys=None
+    ):
         module = nn.Linear(obs_dim, 1)
         value = ValueOperator(
             module=module,
             in_keys=["observation"],
+            out_keys=out_keys,
         )
         return value.to(device)
 
@@ -2310,7 +2792,15 @@ class TestPPO:
         return td
 
     def _create_seq_mock_data_ppo(
-        self, batch=2, T=4, obs_dim=3, action_dim=4, atoms=None, device="cpu"
+        self,
+        batch=2,
+        T=4,
+        obs_dim=3,
+        action_dim=4,
+        atoms=None,
+        device="cpu",
+        sample_log_prob_key="sample_log_prob",
+        action_key="action",
     ):
         # create a tensordict
         total_obs = torch.randn(batch, T + 1, obs_dim, device=device)
@@ -2337,10 +2827,10 @@ class TestPPO:
                     "reward": reward.masked_fill_(~mask.unsqueeze(-1), 0.0),
                 },
                 "collector": {"mask": mask},
-                "action": action.masked_fill_(~mask.unsqueeze(-1), 0.0),
-                "sample_log_prob": (torch.randn_like(action[..., 1]) / 10).masked_fill_(
-                    ~mask, 0.0
-                ),
+                action_key: action.masked_fill_(~mask.unsqueeze(-1), 0.0),
+                sample_log_prob_key: (
+                    torch.randn_like(action[..., 1]) / 10
+                ).masked_fill_(~mask, 0.0),
                 "loc": params_mean.masked_fill_(~mask.unsqueeze(-1), 0.0),
                 "scale": params_scale.masked_fill_(~mask.unsqueeze(-1), 0.0),
             },
@@ -2629,17 +3119,160 @@ class TestPPO:
         for param in params:
             param.grad = None
 
+    @pytest.mark.parametrize("loss_class", (PPOLoss, ClipPPOLoss, KLPENPPOLoss))
+    @pytest.mark.parametrize(
+        "td_est",
+        [
+            ValueEstimators.TD1,
+            ValueEstimators.TD0,
+            ValueEstimators.GAE,
+            ValueEstimators.TDLambda,
+        ],
+    )
+    def test_ppo_tensordict_keys(self, loss_class, td_est):
+        actor = self._create_mock_actor()
+        value = self._create_mock_value()
 
-class TestA2C:
+        loss_fn = loss_class(actor, value, loss_critic_type="l2")
+
+        default_keys = {
+            "advantage": "advantage",
+            "value_target": "value_target",
+            "value": "state_value",
+            "sample_log_prob": "sample_log_prob",
+            "action": "action",
+        }
+
+        self.tensordict_keys_test(
+            loss_fn,
+            default_keys=default_keys,
+            td_est=td_est,
+        )
+
+        value_key = "state_value_test"
+        value = self._create_mock_value(out_keys=[value_key])
+        loss_fn = loss_class(actor, value, loss_critic_type="l2")
+
+        key_mapping = {
+            "advantage": ("advantage", "advantage_new"),
+            "value_target": ("value_target", "value_target_new"),
+            "value": ("value", value_key),
+        }
+        self.set_advantage_keys_through_loss_test(loss_fn, td_est, key_mapping)
+
+    @pytest.mark.parametrize("loss_class", (PPOLoss, ClipPPOLoss, KLPENPPOLoss))
+    @pytest.mark.parametrize("advantage", ("gae", "td", "td_lambda", None))
+    @pytest.mark.parametrize("td_est", list(ValueEstimators) + [None])
+    def test_ppo_tensordict_keys_run(self, loss_class, advantage, td_est):
+        """Test PPO loss module with non-default tensordict keys."""
+        torch.manual_seed(self.seed)
+        gradient_mode = True
+        tensor_keys = {
+            "advantage": "advantage_test",
+            "value_target": "value_target_test",
+            "value": "state_value_test",
+            "sample_log_prob": "sample_log_prob_test",
+            "action": "action_test",
+        }
+
+        td = self._create_seq_mock_data_ppo(
+            sample_log_prob_key=tensor_keys["sample_log_prob"],
+            action_key=tensor_keys["action"],
+        )
+        actor = self._create_mock_actor()
+        value = self._create_mock_value(out_keys=[tensor_keys["value"]])
+
+        if advantage == "gae":
+            advantage = GAE(
+                gamma=0.9,
+                lmbda=0.9,
+                value_network=value,
+                differentiable=gradient_mode,
+            )
+        elif advantage == "td":
+            advantage = TD1Estimator(
+                gamma=0.9,
+                value_network=value,
+                differentiable=gradient_mode,
+            )
+        elif advantage == "td_lambda":
+            advantage = TDLambdaEstimator(
+                gamma=0.9,
+                lmbda=0.9,
+                value_network=value,
+                differentiable=gradient_mode,
+            )
+        elif advantage is None:
+            pass
+        else:
+            raise NotImplementedError
+
+        loss_fn = loss_class(actor, value, loss_critic_type="l2")
+        loss_fn.set_keys(**tensor_keys)
+        if advantage is not None:
+            # collect tensordict key names for the advantage module
+            adv_keys = {
+                key: value
+                for key, value in tensor_keys.items()
+                if key in asdict(GAE._AcceptedKeys()).keys()
+            }
+            advantage.set_keys(**adv_keys)
+            advantage(td)
+        else:
+            if td_est is not None:
+                loss_fn.make_value_estimator(td_est)
+
+        loss = loss_fn(td)
+
+        loss_critic = loss["loss_critic"]
+        loss_objective = loss["loss_objective"] + loss.get("loss_entropy", 0.0)
+        loss_critic.backward(retain_graph=True)
+        # check that grads are independent and non null
+        named_parameters = loss_fn.named_parameters()
+        counter = 0
+        for name, p in named_parameters:
+            if p.grad is not None and p.grad.norm() > 0.0:
+                counter += 1
+                assert "actor" not in name
+                assert "critic" in name
+            if p.grad is None:
+                assert "actor" in name
+                assert "critic" not in name
+        assert counter == 2
+
+        value.zero_grad()
+        loss_objective.backward()
+        counter = 0
+        named_parameters = loss_fn.named_parameters()
+        for name, p in named_parameters:
+            if p.grad is not None and p.grad.norm() > 0.0:
+                counter += 1
+                assert "actor" in name
+                assert "critic" not in name
+            if p.grad is None:
+                assert "actor" not in name
+                assert "critic" in name
+        assert counter == 2
+        actor.zero_grad()
+
+
+class TestA2C(LossModuleTestBase):
     seed = 0
 
-    def _create_mock_actor(self, batch=2, obs_dim=3, action_dim=4, device="cpu"):
+    def _create_mock_actor(
+        self,
+        batch=2,
+        obs_dim=3,
+        action_dim=4,
+        device="cpu",
+        observation_key="observation",
+    ):
         # Actor
         action_spec = BoundedTensorSpec(
             -torch.ones(action_dim), torch.ones(action_dim), (action_dim,)
         )
         net = NormalParamWrapper(nn.Linear(obs_dim, 2 * action_dim))
-        module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
+        module = SafeModule(net, in_keys=[observation_key], out_keys=["loc", "scale"])
         actor = ProbabilisticActor(
             module=module,
             in_keys=["loc", "scale"],
@@ -2648,16 +3281,35 @@ class TestA2C:
         )
         return actor.to(device)
 
-    def _create_mock_value(self, batch=2, obs_dim=3, action_dim=4, device="cpu"):
+    def _create_mock_value(
+        self,
+        batch=2,
+        obs_dim=3,
+        action_dim=4,
+        device="cpu",
+        out_keys=None,
+        observation_key="observation",
+    ):
         module = nn.Linear(obs_dim, 1)
         value = ValueOperator(
             module=module,
-            in_keys=["observation"],
+            in_keys=[observation_key],
+            out_keys=out_keys,
         )
         return value.to(device)
 
     def _create_seq_mock_data_a2c(
-        self, batch=2, T=4, obs_dim=3, action_dim=4, atoms=None, device="cpu"
+        self,
+        batch=2,
+        T=4,
+        obs_dim=3,
+        action_dim=4,
+        atoms=None,
+        device="cpu",
+        action_key="action",
+        observation_key="observation",
+        reward_key="reward",
+        done_key="done",
     ):
         # create a tensordict
         total_obs = torch.randn(batch, T + 1, obs_dim, device=device)
@@ -2677,14 +3329,14 @@ class TestA2C:
         td = TensorDict(
             batch_size=(batch, T),
             source={
-                "observation": obs.masked_fill_(~mask.unsqueeze(-1), 0.0),
+                observation_key: obs.masked_fill_(~mask.unsqueeze(-1), 0.0),
                 "next": {
-                    "observation": next_obs.masked_fill_(~mask.unsqueeze(-1), 0.0),
-                    "done": done,
-                    "reward": reward.masked_fill_(~mask.unsqueeze(-1), 0.0),
+                    observation_key: next_obs.masked_fill_(~mask.unsqueeze(-1), 0.0),
+                    done_key: done,
+                    reward_key: reward.masked_fill_(~mask.unsqueeze(-1), 0.0),
                 },
                 "collector": {"mask": mask},
-                "action": action.masked_fill_(~mask.unsqueeze(-1), 0.0),
+                action_key: action.masked_fill_(~mask.unsqueeze(-1), 0.0),
                 "sample_log_prob": torch.randn_like(action[..., 1]).masked_fill_(
                     ~mask, 0.0
                 )
@@ -2734,7 +3386,7 @@ class TestA2C:
             _ = loss_fn._log_probs(td)
         td["action"].requires_grad = False
 
-        td = td.exclude(loss_fn.value_target_key)
+        td = td.exclude(loss_fn.tensor_keys.value_target)
         if advantage is not None:
             advantage(td)
         elif td_est is not None:
@@ -2833,8 +3485,161 @@ class TestA2C:
         for param in params:
             param.grad = None
 
+    @pytest.mark.parametrize(
+        "td_est",
+        [
+            ValueEstimators.TD1,
+            ValueEstimators.TD0,
+            ValueEstimators.GAE,
+            ValueEstimators.TDLambda,
+        ],
+    )
+    def test_a2c_tensordict_keys(self, td_est):
+        actor = self._create_mock_actor()
+        value = self._create_mock_value()
 
-class TestReinforce:
+        loss_fn = A2CLoss(actor, value, loss_critic_type="l2")
+
+        default_keys = {
+            "advantage": "advantage",
+            "value_target": "value_target",
+            "value": "state_value",
+            "action": "action",
+            "reward": "reward",
+            "done": "done",
+        }
+
+        self.tensordict_keys_test(
+            loss_fn,
+            default_keys=default_keys,
+            td_est=td_est,
+        )
+
+        value = self._create_mock_value(out_keys=["value_state_test"])
+
+        loss_fn = A2CLoss(actor, value, loss_critic_type="l2")
+
+        key_mapping = {
+            "advantage": ("advantage", "advantage_test"),
+            "value_target": ("value_target", "value_target_test"),
+            "value": ("value", "value_state_test"),
+            "reward": ("reward", "reward_test"),
+            "done": ("done", ("done", "test")),
+        }
+        self.set_advantage_keys_through_loss_test(loss_fn, td_est, key_mapping)
+
+    @pytest.mark.parametrize("device", get_available_devices())
+    def test_a2c_tensordict_keys_run(self, device):
+        """Test A2C loss module with non-default tensordict keys."""
+        torch.manual_seed(self.seed)
+        gradient_mode = True
+        advantage_key = "advantage_test"
+        value_target_key = "value_target_test"
+        value_key = "state_value_test"
+        action_key = "action_test"
+        reward_key = "reward_test"
+        done_key = ("done", "test")
+
+        td = self._create_seq_mock_data_a2c(
+            device=device,
+            action_key=action_key,
+            reward_key=reward_key,
+            done_key=done_key,
+        )
+
+        actor = self._create_mock_actor(device=device)
+        value = self._create_mock_value(device=device, out_keys=[value_key])
+        advantage = GAE(
+            gamma=0.9,
+            lmbda=0.9,
+            value_network=value,
+            differentiable=gradient_mode,
+        )
+        advantage.set_keys(
+            advantage=advantage_key,
+            value_target=value_target_key,
+            value=value_key,
+            reward=reward_key,
+            done=done_key,
+        )
+        loss_fn = A2CLoss(actor, value, loss_critic_type="l2")
+        loss_fn.set_keys(
+            advantage=advantage_key,
+            value_target=value_target_key,
+            value=value_key,
+            action=action_key,
+            reward=reward_key,
+            done=done_key,
+        )
+
+        advantage(td)
+
+        loss = loss_fn(td)
+        loss_critic = loss["loss_critic"]
+        loss_objective = loss["loss_objective"] + loss.get("loss_entropy", 0.0)
+        loss_critic.backward(retain_graph=True)
+        # check that grads are independent and non null
+        named_parameters = loss_fn.named_parameters()
+        for name, p in named_parameters:
+            if p.grad is not None and p.grad.norm() > 0.0:
+                assert "actor" not in name
+            if p.grad is None:
+                assert "actor" in name
+                assert "critic" not in name
+
+        value.zero_grad()
+        loss_objective.backward()
+        named_parameters = loss_fn.named_parameters()
+        for name, p in named_parameters:
+            if p.grad is not None and p.grad.norm() > 0.0:
+                assert "actor" in name
+                assert "critic" not in name
+            if p.grad is None:
+                assert "actor" not in name
+                assert "critic" in name
+        actor.zero_grad()
+
+        # test reset
+        loss_fn.reset()
+
+    @pytest.mark.parametrize("action_key", ["action", "action2"])
+    @pytest.mark.parametrize("observation_key", ["observation", "observation2"])
+    @pytest.mark.parametrize("reward_key", ["reward", "reward2"])
+    @pytest.mark.parametrize("done_key", ["done", "done2"])
+    def test_a2c_notensordict(self, action_key, observation_key, reward_key, done_key):
+        torch.manual_seed(self.seed)
+
+        actor = self._create_mock_actor(observation_key=observation_key)
+        value = self._create_mock_value(observation_key=observation_key)
+        td = self._create_seq_mock_data_a2c(
+            action_key=action_key,
+            observation_key=observation_key,
+            reward_key=reward_key,
+            done_key=done_key,
+        )
+
+        loss = A2CLoss(actor, value)
+        loss.set_keys(action=action_key, reward=reward_key, done=done_key)
+
+        kwargs = {
+            observation_key: td.get(observation_key),
+            f"next_{reward_key}": td.get(("next", reward_key)),
+            f"next_{done_key}": td.get(("next", done_key)),
+            action_key: td.get(action_key),
+        }
+        td = TensorDict(kwargs, td.batch_size).unflatten_keys("_")
+
+        loss_val = loss(**kwargs)
+        loss_val_td = loss(td)
+
+        torch.testing.assert_close(loss_val_td.get("loss_objective"), loss_val[0])
+        torch.testing.assert_close(loss_val_td.get("loss_critic"), loss_val[1])
+        # don't test entropy and loss_entropy, since they depend on a random sample
+        # from distribution
+        assert len(loss_val) == 4
+
+
+class TestReinforce(LossModuleTestBase):
     @pytest.mark.parametrize("delay_value", [True, False])
     @pytest.mark.parametrize("gradient_mode", [True, False])
     @pytest.mark.parametrize("advantage", ["gae", "td", "td_lambda", None])
@@ -2929,9 +3734,66 @@ class TestReinforce:
                 allow_unused=False,
             )
 
+    @pytest.mark.parametrize(
+        "td_est",
+        [
+            ValueEstimators.TD1,
+            ValueEstimators.TD0,
+            ValueEstimators.GAE,
+            ValueEstimators.TDLambda,
+        ],
+    )
+    def test_reinforce_tensordict_keys(self, td_est):
+        n_obs = 3
+        n_act = 5
+        value_net = ValueOperator(nn.Linear(n_obs, 1), in_keys=["observation"])
+        net = NormalParamWrapper(nn.Linear(n_obs, 2 * n_act))
+        module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
+        actor_net = ProbabilisticActor(
+            module,
+            distribution_class=TanhNormal,
+            return_log_prob=True,
+            in_keys=["loc", "scale"],
+            spec=UnboundedContinuousTensorSpec(n_act),
+        )
+
+        loss_fn = ReinforceLoss(
+            actor_net,
+            critic=value_net,
+        )
+
+        default_keys = {
+            "advantage": "advantage",
+            "value_target": "value_target",
+            "value": "state_value",
+            "sample_log_prob": "sample_log_prob",
+        }
+
+        self.tensordict_keys_test(
+            loss_fn,
+            default_keys=default_keys,
+            td_est=td_est,
+        )
+
+        value_net = ValueOperator(
+            nn.Linear(n_obs, 1), in_keys=["observation"], out_keys=["state_value_test"]
+        )
+
+        loss_fn = ReinforceLoss(
+            actor_net,
+            critic=value_net,
+        )
+
+        key_mapping = {
+            "advantage": ("advantage", "advantage_test"),
+            "value_target": ("value_target", "value_target_test"),
+            "value": ("value", "state_value_test"),
+        }
+        self.set_advantage_keys_through_loss_test(loss_fn, td_est, key_mapping)
+
 
 @pytest.mark.parametrize("device", get_available_devices())
-class TestDreamer:
+class TestDreamer(LossModuleTestBase):
     def _create_world_model_data(
         self, batch_size, temporal_length, rssm_hidden_dim, state_dim
     ):
@@ -3181,7 +4043,9 @@ class TestDreamer:
         delayed_clamp,
         free_nats,
     ):
-        tensordict = self._create_world_model_data(2, 3, 10, 5).to(device)
+        tensordict = self._create_world_model_data(
+            batch_size=2, temporal_length=3, rssm_hidden_dim=10, state_dim=5
+        ).to(device)
         world_model = self._create_world_model_model(10, 5).to(device)
         loss_module = DreamerModelLoss(
             world_model,
@@ -3326,17 +4190,86 @@ class TestDreamer:
             raise ValueError("Gradients are zero")
         loss_module.zero_grad()
 
+    def test_dreamer_model_tensordict_keys(self, device):
+        world_model = self._create_world_model_model(10, 5)
+        loss_fn = DreamerModelLoss(world_model)
 
-class TestIQL:
+        default_keys = {
+            "reward": "reward",
+            "true_reward": "true_reward",
+            "prior_mean": "prior_mean",
+            "prior_std": "prior_std",
+            "posterior_mean": "posterior_mean",
+            "posterior_std": "posterior_std",
+            "pixels": "pixels",
+            "reco_pixels": "reco_pixels",
+        }
+        self.tensordict_keys_test(loss_fn, default_keys=default_keys)
+
+    @pytest.mark.parametrize(
+        "td_est", [ValueEstimators.TD1, ValueEstimators.TD0, ValueEstimators.TDLambda]
+    )
+    def test_dreamer_actor_tensordict_keys(self, td_est, device):
+        mb_env = self._create_mb_env(10, 5)
+        actor_model = self._create_actor_model(10, 5)
+        value_model = self._create_value_model(10, 5)
+        loss_fn = DreamerActorLoss(
+            actor_model,
+            value_model,
+            mb_env,
+        )
+
+        default_keys = {
+            "belief": "belief",
+            "reward": "reward",
+            "value": "state_value",
+            "done": "done",
+        }
+        self.tensordict_keys_test(
+            loss_fn,
+            default_keys=default_keys,
+            td_est=td_est,
+        )
+
+        loss_fn = DreamerActorLoss(
+            actor_model,
+            value_model,
+            mb_env,
+        )
+
+        key_mapping = {"value": ("value", "value_test")}
+        self.set_advantage_keys_through_loss_test(loss_fn, td_est, key_mapping)
+
+    def test_dreamer_value_tensordict_keys(self, device):
+        value_model = self._create_value_model(10, 5)
+        loss_fn = DreamerValueLoss(value_model)
+
+        default_keys = {
+            "value": "state_value",
+        }
+        self.tensordict_keys_test(loss_fn, default_keys=default_keys)
+
+
+@pytest.mark.skipif(
+    not _has_functorch, reason=f"functorch not installed: {FUNCTORCH_ERR}"
+)
+class TestIQL(LossModuleTestBase):
     seed = 0
 
-    def _create_mock_actor(self, batch=2, obs_dim=3, action_dim=4, device="cpu"):
+    def _create_mock_actor(
+        self,
+        batch=2,
+        obs_dim=3,
+        action_dim=4,
+        device="cpu",
+        observation_key="observation",
+    ):
         # Actor
         action_spec = BoundedTensorSpec(
             -torch.ones(action_dim), torch.ones(action_dim), (action_dim,)
         )
         net = NormalParamWrapper(nn.Linear(obs_dim, 2 * action_dim))
-        module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
+        module = SafeModule(net, in_keys=[observation_key], out_keys=["loc", "scale"])
         actor = ProbabilisticActor(
             module=module,
             in_keys=["loc", "scale"],
@@ -3345,7 +4278,16 @@ class TestIQL:
         )
         return actor.to(device)
 
-    def _create_mock_qvalue(self, batch=2, obs_dim=3, action_dim=4, device="cpu"):
+    def _create_mock_qvalue(
+        self,
+        batch=2,
+        obs_dim=3,
+        action_dim=4,
+        device="cpu",
+        out_keys=None,
+        observation_key="observation",
+        action_key="action",
+    ):
         class ValueClass(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -3357,15 +4299,23 @@ class TestIQL:
         module = ValueClass()
         qvalue = ValueOperator(
             module=module,
-            in_keys=["observation", "action"],
+            in_keys=[observation_key, action_key],
+            out_keys=out_keys,
         )
         return qvalue.to(device)
 
-    def _create_mock_value(self, batch=2, obs_dim=3, action_dim=4, device="cpu"):
+    def _create_mock_value(
+        self,
+        batch=2,
+        obs_dim=3,
+        action_dim=4,
+        device="cpu",
+        out_keys=None,
+        observation_key="observation",
+    ):
         module = nn.Linear(obs_dim, 1)
         value = ValueOperator(
-            module=module,
-            in_keys=["observation"],
+            module=module, in_keys=[observation_key], out_keys=out_keys
         )
         return value.to(device)
 
@@ -3375,7 +4325,16 @@ class TestIQL:
         raise NotImplementedError
 
     def _create_mock_data_iql(
-        self, batch=16, obs_dim=3, action_dim=4, atoms=None, device="cpu"
+        self,
+        batch=16,
+        obs_dim=3,
+        action_dim=4,
+        atoms=None,
+        device="cpu",
+        observation_key="observation",
+        action_key="action",
+        done_key="done",
+        reward_key="reward",
     ):
         # create a tensordict
         obs = torch.randn(batch, obs_dim, device=device)
@@ -3389,13 +4348,13 @@ class TestIQL:
         td = TensorDict(
             batch_size=(batch,),
             source={
-                "observation": obs,
+                observation_key: obs,
                 "next": {
-                    "observation": next_obs,
-                    "done": done,
-                    "reward": reward,
+                    observation_key: next_obs,
+                    done_key: done,
+                    reward_key: reward,
                 },
-                "action": action,
+                action_key: action,
             },
             device=device,
         )
@@ -3433,9 +4392,6 @@ class TestIQL:
         )
         return td
 
-    @pytest.mark.skipif(
-        not _has_functorch, reason=f"functorch not installed: {FUNCTORCH_ERR}"
-    )
     @pytest.mark.parametrize("num_qvalue", [1, 2, 4, 8])
     @pytest.mark.parametrize("device", get_available_devices())
     @pytest.mark.parametrize("temperature", [0.0, 0.1, 1.0, 10.0])
@@ -3475,7 +4431,7 @@ class TestIQL:
 
         with _check_td_steady(td):
             loss = loss_fn(td)
-        assert loss_fn.priority_key in td.keys()
+        assert loss_fn.tensor_keys.priority in td.keys()
 
         # check that losses are independent
         for k in loss.keys():
@@ -3553,9 +4509,6 @@ class TestIQL:
         for name, p in named_parameters:
             assert p.grad.norm() > 0.0, f"parameter {name} has a null gradient"
 
-    @pytest.mark.skipif(
-        not _has_functorch, reason=f"functorch not installed: {FUNCTORCH_ERR}"
-    )
     @pytest.mark.parametrize("n", list(range(4)))
     @pytest.mark.parametrize("num_qvalue", [1, 2, 4, 8])
     @pytest.mark.parametrize("temperature", [0.0, 0.1, 1.0, 10.0])
@@ -3596,7 +4549,7 @@ class TestIQL:
         np.random.seed(0)
         with _check_td_steady(ms_td):
             loss_ms = loss_fn(ms_td)
-        assert loss_fn.priority_key in ms_td.keys()
+        assert loss_fn.tensor_keys.priority in ms_td.keys()
 
         with torch.no_grad():
             torch.manual_seed(0)  # log-prob is computed with a random action
@@ -3646,6 +4599,92 @@ class TestIQL:
         for p in loss_fn.parameters():
             p.data += torch.randn_like(p)
         assert all((p1 != p2).all() for p1, p2 in zip(parameters, actor.parameters()))
+
+    @pytest.mark.parametrize(
+        "td_est", [ValueEstimators.TD1, ValueEstimators.TD0, ValueEstimators.TDLambda]
+    )
+    def test_iql_tensordict_keys(self, td_est):
+        actor = self._create_mock_actor()
+        qvalue = self._create_mock_qvalue()
+        value = self._create_mock_value()
+
+        loss_fn = IQLLoss(
+            actor_network=actor,
+            qvalue_network=qvalue,
+            value_network=value,
+            loss_function="l2",
+        )
+
+        default_keys = {
+            "priority": "td_error",
+            "log_prob": "_log_prob",
+            "action": "action",
+            "state_action_value": "state_action_value",
+            "value": "state_value",
+            "reward": "reward",
+            "done": "done",
+        }
+
+        self.tensordict_keys_test(
+            loss_fn,
+            default_keys=default_keys,
+            td_est=td_est,
+        )
+
+        value = self._create_mock_value(out_keys=["value_test"])
+        loss_fn = IQLLoss(
+            actor_network=actor,
+            qvalue_network=qvalue,
+            value_network=value,
+            loss_function="l2",
+        )
+
+        key_mapping = {
+            "value": ("value", "value_test"),
+            "done": ("done", "done_test"),
+            "reward": ("reward", ("reward", "test")),
+        }
+        self.set_advantage_keys_through_loss_test(loss_fn, td_est, key_mapping)
+
+    @pytest.mark.parametrize("action_key", ["action", "action2"])
+    @pytest.mark.parametrize("observation_key", ["observation", "observation2"])
+    @pytest.mark.parametrize("reward_key", ["reward", "reward2"])
+    @pytest.mark.parametrize("done_key", ["done", "done2"])
+    def test_iql_notensordict(self, action_key, observation_key, reward_key, done_key):
+        torch.manual_seed(self.seed)
+        td = self._create_mock_data_iql(
+            action_key=action_key,
+            observation_key=observation_key,
+            reward_key=reward_key,
+            done_key=done_key,
+        )
+
+        actor = self._create_mock_actor(observation_key=observation_key)
+        qvalue = self._create_mock_qvalue(
+            observation_key=observation_key,
+            action_key=action_key,
+            out_keys=["state_action_value"],
+        )
+        value = self._create_mock_value(observation_key=observation_key)
+
+        loss = IQLLoss(actor_network=actor, qvalue_network=qvalue, value_network=value)
+        loss.set_keys(action=action_key, reward=reward_key, done=done_key)
+
+        kwargs = {
+            action_key: td.get(action_key),
+            observation_key: td.get(observation_key),
+            f"next_{reward_key}": td.get(("next", reward_key)),
+            f"next_{done_key}": td.get(("next", done_key)),
+        }
+        td = TensorDict(kwargs, td.batch_size).unflatten_keys("_")
+
+        loss_val = loss(**kwargs)
+        loss_val_td = loss(td)
+        assert len(loss_val) == 4
+        torch.testing.assert_close(loss_val_td.get("loss_actor"), loss_val[0])
+        torch.testing.assert_close(loss_val_td.get("loss_qvalue"), loss_val[1])
+        torch.testing.assert_close(loss_val_td.get("loss_value"), loss_val[2])
+        torch.testing.assert_close(loss_val_td.get("entropy"), loss_val[3])
 
 
 def test_hold_out():
@@ -3709,15 +4748,19 @@ def test_updater(mode, value_network_update_interval, device, dtype):
         RuntimeError, match="Your module seems to have a target tensor list "
     ):
         if mode == "hard":
-            upd = HardUpdate(module, value_network_update_interval)
+            upd = HardUpdate(
+                module, value_network_update_interval=value_network_update_interval
+            )
         elif mode == "soft":
-            upd = SoftUpdate(module, 1 - 1 / value_network_update_interval)
+            upd = SoftUpdate(module, eps=1 - 1 / value_network_update_interval)
 
     class custom_module(LossModule):
-        def __init__(self):
+        def __init__(self, delay_module=True):
             super().__init__()
             module1 = torch.nn.BatchNorm2d(10).eval()
-            self.convert_to_functional(module1, "module1", create_target_params=True)
+            self.convert_to_functional(
+                module1, "module1", create_target_params=delay_module
+            )
             module2 = torch.nn.BatchNorm2d(10).eval()
             self.module2 = module2
             iterator_params = self.target_module1_params.values(
@@ -3729,7 +4772,33 @@ def test_updater(mode, value_network_update_interval, device, dtype):
                 else:
                     target.data += 10
 
+        def _forward_value_estimator_keys(self, **kwargs) -> None:
+            pass
+
+    module = custom_module(delay_module=False)
+    with pytest.raises(RuntimeError, match="The target and source data are identical"):
+        if mode == "hard":
+            upd = HardUpdate(
+                module, value_network_update_interval=value_network_update_interval
+            )
+        elif mode == "soft":
+            upd = SoftUpdate(
+                module,
+                eps=1 - 1 / value_network_update_interval,
+            )
+        else:
+            raise NotImplementedError
+
     module = custom_module().to(device).to(dtype)
+
+    if mode == "soft":
+        with pytest.raises(ValueError, match="One and only one argument"):
+            upd = SoftUpdate(
+                module,
+                eps=1 - 1 / value_network_update_interval,
+                tau=0.1,
+            )
+
     _ = module.module1_params
     _ = module.target_module1_params
     if mode == "hard":
@@ -3737,7 +4806,7 @@ def test_updater(mode, value_network_update_interval, device, dtype):
             module, value_network_update_interval=value_network_update_interval
         )
     elif mode == "soft":
-        upd = SoftUpdate(module, 1 - 1 / value_network_update_interval)
+        upd = SoftUpdate(module, eps=1 - 1 / value_network_update_interval)
     for _, _v in upd._targets.items(True, True):
         if _v.dtype is not torch.int64:
             _v.copy_(torch.randn_like(_v))
@@ -4302,6 +5371,66 @@ class TestValues:
         )
         v2 = vec_td_lambda_advantage_estimate(
             gamma_tensor, lmbda, state_value, next_state_value, reward, done
+        )
+
+        torch.testing.assert_close(v1, v2, rtol=1e-4, atol=1e-4)
+
+    @pytest.mark.parametrize("device", get_available_devices())
+    @pytest.mark.parametrize("gamma", [0.5, 0.99])
+    @pytest.mark.parametrize("lmbda", [0.25, 0.99])
+    @pytest.mark.parametrize("N", [(3,), (7, 3)])
+    @pytest.mark.parametrize("T", [3, 100])
+    @pytest.mark.parametrize("F", [1, 4])
+    @pytest.mark.parametrize("has_done", [True, False])
+    @pytest.mark.parametrize(
+        "gamma_tensor", ["scalar", "tensor", "tensor_single_element"]
+    )
+    @pytest.mark.parametrize("lmbda_tensor", ["scalar", "tensor_single_element"])
+    def test_tdlambda_tensor_gamma_single_element(
+        self, device, gamma, lmbda, N, T, F, has_done, gamma_tensor, lmbda_tensor
+    ):
+        """Tests vec_td_lambda_advantage_estimate against itself with
+        gamma being a tensor or a scalar
+
+        """
+        torch.manual_seed(0)
+
+        done = torch.zeros(*N, T, F, device=device, dtype=torch.bool)
+        if has_done:
+            done = done.bernoulli_(0.1)
+        reward = torch.randn(*N, T, F, device=device)
+        state_value = torch.randn(*N, T, F, device=device)
+        next_state_value = torch.randn(*N, T, F, device=device)
+
+        if gamma_tensor == "tensor":
+            gamma_vec = torch.full_like(reward, gamma)
+        elif gamma_tensor == "tensor_single_element":
+            gamma_vec = torch.as_tensor([gamma], device=device)
+        else:
+            gamma_vec = gamma
+
+        if gamma_tensor == "tensor_single_element":
+            lmbda_vec = torch.as_tensor([lmbda], device=device)
+        else:
+            lmbda_vec = lmbda
+
+        v1 = vec_td_lambda_advantage_estimate(
+            gamma, lmbda, state_value, next_state_value, reward, done
+        )
+        v2 = vec_td_lambda_advantage_estimate(
+            gamma_vec, lmbda_vec, state_value, next_state_value, reward, done
+        )
+
+        torch.testing.assert_close(v1, v2, rtol=1e-4, atol=1e-4)
+
+        # # same with last done being true
+        done[..., -1, :] = True  # terminating trajectory
+
+        v1 = vec_td_lambda_advantage_estimate(
+            gamma, lmbda, state_value, next_state_value, reward, done
+        )
+        v2 = vec_td_lambda_advantage_estimate(
+            gamma_vec, lmbda_vec, state_value, next_state_value, reward, done
         )
 
         torch.testing.assert_close(v1, v2, rtol=1e-4, atol=1e-4)
@@ -4886,6 +6015,9 @@ def test_shared_params(dest, expected_dtype, expected_device):
                 compare_against=list(actor_network.parameters()),
             )
 
+        def _forward_value_estimator_keys(self, **kwargs) -> None:
+            pass
+
     actor_network = td_module.get_policy_operator()
     value_network = td_module.get_value_operator()
 
@@ -5098,6 +6230,55 @@ class TestAdv:
         assert (td["state_value"] == exp_val).all()
         # assert (td["next", "state_value"] == exp_val).all()
 
+    @pytest.mark.parametrize("value", ["state_value", "state_value_test"])
+    @pytest.mark.parametrize(
+        "adv,kwargs",
+        [
+            [GAE, {"lmbda": 0.95}],
+            [TD1Estimator, {}],
+            [TDLambdaEstimator, {"lmbda": 0.95}],
+        ],
+    )
+    def test_set_keys(self, value, adv, kwargs):
+        value_net = TensorDictModule(nn.Linear(3, 1), in_keys=["obs"], out_keys=[value])
+        module = adv(
+            gamma=0.98,
+            value_network=value_net,
+            **kwargs,
+        )
+        module.set_keys(value=value)
+        assert module.tensor_keys.value == value
+
+        with pytest.raises(KeyError) as excinfo:
+            module.set_keys(unknown_key="unknown_value")
+            assert "unknown_value not found" in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        "adv,kwargs",
+        [
+            [GAE, {"lmbda": 0.95}],
+            [TD1Estimator, {}],
+            [TDLambdaEstimator, {"lmbda": 0.95}],
+        ],
+    )
+    def test_set_deprecated_keys(self, adv, kwargs):
+        value_net = TensorDictModule(
+            nn.Linear(3, 1), in_keys=["obs"], out_keys=["test_value"]
+        )
+
+        with pytest.warns(DeprecationWarning):
+            module = adv(
+                gamma=0.98,
+                value_network=value_net,
+                value_key="test_value",
+                advantage_key="advantage_test",
+                value_target_key="value_target_test",
+                **kwargs,
+            )
+            assert module.tensor_keys.value == "test_value"
+            assert module.tensor_keys.advantage == "advantage_test"
+            assert module.tensor_keys.value_target == "value_target_test"
+
 
 class TestBase:
     @pytest.mark.parametrize("expand_dim", [None, 2])
@@ -5144,6 +6325,36 @@ class TestBase:
 
         for key in ["module.1.bias", "module.1.weight"]:
             loss_module.module_b_params.flatten_keys()[key].requires_grad
+
+    def test_tensordict_keys(self):
+        """Test configurable tensordict key behavior with derived classes."""
+
+        class MyLoss(LossModule):
+            def __init__(self):
+                super().__init__()
+
+        loss_module = MyLoss()
+        with pytest.raises(AttributeError):
+            loss_module.set_keys()
+
+        class MyLoss2(MyLoss):
+            def _forward_value_estimator_keys(self, **kwargs) -> None:
+                pass
+
+        loss_module = MyLoss2()
+        assert loss_module.set_keys() is None
+        with pytest.raises(ValueError):
+            loss_module.set_keys(some_key="test")
+
+        class MyLoss3(MyLoss2):
+            @dataclass
+            class _AcceptedKeys:
+                some_key = "some_value"
+
+        loss_module = MyLoss3()
+        assert loss_module.tensor_keys.some_key == "some_value"
+        loss_module.set_keys(some_key="test")
+        assert loss_module.tensor_keys.some_key == "test"
 
 
 class TestUtils:
@@ -5286,14 +6497,20 @@ class TestUtils:
         assert (z2 == 2).all()
 
 
-@pytest.mark.parametrize("updater", [HardUpdate, SoftUpdate])
-def test_updater_warning(updater):
+@pytest.mark.parametrize(
+    "updater,kwarg",
+    [
+        (HardUpdate, {"value_network_update_interval": 1000}),
+        (SoftUpdate, {"eps": 0.99}),
+    ],
+)
+def test_updater_warning(updater, kwarg):
     with warnings.catch_warnings():
         dqn = DQNLoss(torch.nn.Linear(3, 4), delay_value=True, action_space="one_hot")
     with pytest.warns(UserWarning):
         dqn.target_value_network_params
     with warnings.catch_warnings():
-        updater(dqn)
+        updater(dqn, **kwarg)
     with warnings.catch_warnings():
         dqn.target_value_network_params
 
