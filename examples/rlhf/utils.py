@@ -11,9 +11,9 @@ HERE = Path(__file__).parent
 
 
 def load_config(path):
-    """
-    Load config from specified path. Useful in notebooks where argparse can cause
-    problems.
+    """Load config from specified path.
+    
+    Useful in notebooks where argparse can cause problems.
     """
     with open(path) as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
@@ -21,10 +21,7 @@ def load_config(path):
 
 
 def load_and_update_config(path):
-    """
-    Loads config from specified path and allows values to be overridden with command
-    line arguments
-    """
+    """Loads config from specified path and allows values to be overridden with command line arguments."""
     config = load_config(path)
 
     parser = argparse.ArgumentParser()
