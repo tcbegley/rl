@@ -149,10 +149,12 @@ def _create_rollout_td(
         attention_mask=batch.attention_mask,
     )
     # the reward is zero except for the timestep where we reached a stopping condition
-    reward = (
-        done * (end_scores - end_scores_labels)[:, None, None]
-        - kl_coef * log_ratio[..., None]
-    )
+    clipped_scores = torch.clip(end_scores - end_scores_labels, -10, 10)
+    if ((end_scores - end_scores_labels) != clipped_scores).any():
+        print("WARNING: clipping:", end_scores - end_scores_labels)
+    reward_raw = done * (clipped_scores)[:, None, None]
+    reward_kl = -kl_coef * log_ratio[..., None]
+    reward = (reward_raw +  reward_kl)
     td = {
         "action": action,
         "input_ids": rollout_generated[:, :-1].clone(),
@@ -163,6 +165,8 @@ def _create_rollout_td(
             "attention_mask": rollout_attention_mask[:, 1:].clone(),
             "done": done,
             "reward": reward,
+            "reward_raw": reward_raw,
+            "reward_kl": reward_kl,
         },
     }
     return TensorDict(td, batch_size=done.shape[:2], device=generated.device)

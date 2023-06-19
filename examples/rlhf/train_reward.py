@@ -4,12 +4,12 @@
 # LICENSE file in the root directory of this source tree.
 import time
 
-import hydra
 import torch
 from data import get_reward_dataloader
 from models.reward import init_reward_model
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from utils import get_file_logger, setup, resolve_name_or_path
+from omegaconf import OmegaConf
 
 
 def _accuracy(chosen_end_scores, rejected_end_scores):
@@ -39,8 +39,8 @@ def create_loss_estimator(eval_iters, ctx):
     return estimate_loss
 
 
-@hydra.main(version_base="1.1", config_path="config", config_name="train_reward")
-def main(cfg):
+def main():
+    cfg = OmegaConf.load('config/train_reward.yaml')
     loss_logger = get_file_logger("loss_logger", "reward_loss_logger.log")
 
     data_cfg = cfg.data
@@ -86,7 +86,7 @@ def main(cfg):
 
     # ######## INIT TRAINING FUNCTIONS ########
 
-    optimizer = torch.optim.AdamW(model.parameters(), **train_cfg.optimizer)
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], **train_cfg.optimizer)
     scheduler = None
     if train_cfg.decay_lr:
         scheduler = CosineAnnealingLR(optimizer, **train_cfg.scheduler)
