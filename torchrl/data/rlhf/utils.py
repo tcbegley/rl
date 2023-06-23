@@ -190,7 +190,6 @@ class RolloutFromModel:
             scores = scores.max(dim=-1).values
         else:
             index = generated_tokens.unsqueeze(-1)
-            index = index[:, -num_gen:]
             scores = torch.gather(scores, dim=-1, index=index)
         if pad_to is not None:
             pad = pad_to - scores.shape[1]
@@ -231,6 +230,13 @@ class RolloutFromModel:
         )
         return log_ratio
 
+    def _get_generated_tokens(self, generated, rindex):
+        # extracts the generated tokens from the full sequence of prompt + generated
+        idx = torch.arange(generated.shape[1], device=generated.device)
+        rindex = rindex.unsqueeze(-1)
+        mask = (idx >= rindex) & (idx < rindex + self.max_new_tokens)
+        return generated[mask].reshape(-1, self.max_new_tokens)
+
     @torch.no_grad()
     def generate(self, batch: PromptData, generation_config=None):
         """Generates a sequence of tokens from a batch of data sampled from the data collector.
@@ -267,8 +273,7 @@ class RolloutFromModel:
             generation_config=generation_config,
         )
         samples = outputs.sequences
-        # get the scores and normalise for log probabilities
-        log_probs_gen = self._get_scores(outputs.scores, samples)
+
         # we'll insert generated tokens into a tensor prepopulated with padding tokens,
         # thereby moving back to right padding for reward model
         generated = self._padded_left_to_right(
@@ -276,6 +281,9 @@ class RolloutFromModel:
             input_ids.shape[1] + self.max_new_tokens,
             eos_token_id=self.EOS_TOKEN_ID,
         )
+        generated_tokens = self._get_generated_tokens(generated, batch.prompt_rindex)
+        # get the scores and normalise for log probabilities
+        log_probs_gen = self._get_scores(outputs.scores, generated_tokens)
 
         log_ratio = self._log_ratio(generated, batch.prompt_rindex)
         return generated, log_probs_gen, log_ratio
