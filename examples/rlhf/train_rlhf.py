@@ -4,24 +4,30 @@
 # LICENSE file in the root directory of this source tree.
 from copy import deepcopy
 
-import hydra
+import numpy as np
 import torch
-from data import get_prompt_dataloader
-from env import rollout
+
+import wandb
 from models.actor_critic import init_actor_critic
 from models.reward import init_reward_model
+
+from omegaconf import OmegaConf
 from torch.optim.lr_scheduler import CosineAnnealingLR
+
+from torchrl.data import LazyTensorStorage
 from torchrl.data.replay_buffers import (
-    LazyTensorStorage,
     SamplerWithoutReplacement,
     TensorDictReplayBuffer,
 )
+from torchrl.data.rlhf.dataset import get_dataloader
+from torchrl.data.rlhf.prompt import PromptData
+from torchrl.data.rlhf.utils import RolloutFromModel
 
 from torchrl.objectives import ClipPPOLoss
 from torchrl.objectives.value import GAE
 from tqdm import tqdm
 from transformers import GenerationConfig, GPT2Tokenizer
-from utils import get_file_logger, setup, resolve_name_or_path
+from utils import get_file_logger, resolve_name_or_path, setup
 
 
 def flatten_td(td):
@@ -34,6 +40,28 @@ def flatten_td(td):
     mask[..., 1:, :] = done[..., :-1, :]  # shift by one
     mask = ~mask.cumsum(-2).bool().squeeze()
     return td[mask]
+
+
+class AdaptiveKLController:
+    """Adaptive KL Controller as described in Ziegler et al. "Fine-Tuning Language Models from Human Preferences"
+    Reference: Section 2.2 https://arxiv.org/pdf/1909.08593.pdf#page=2
+    Source: https://github.com/openai/lm-human-preferences/blob/master/lm_human_preferences/train_policy.py
+    """
+
+    def __init__(self, init_kl_coef: float, target: float, horizon: int):
+        self.value = init_kl_coef
+        self.target = target
+        self.horizon = horizon
+
+    def update(self, current: float, n_steps: int):
+        """Returns adaptively updated KL coefficient, βₜ₊₁.
+        Arguments:
+            current: The current KL value between the newest policy and the initial policy.
+        """
+        proportional_error = np.clip(current / self.target - 1, -0.2, 0.2)  # ϵₜ
+        mult = 1 + proportional_error * n_steps / self.horizon
+        self.value *= mult  # βₜ₊₁
+        return self.value
 
 
 def create_reward_estimator(
@@ -67,13 +95,12 @@ def create_reward_estimator(
 
     @torch.no_grad()
     def estimate_reward(model, dataloader):
+        rollout_from_model = RolloutFromModel(model, ref_model, reward_model)
         rewards = torch.zeros(eval_iters)
         for k in range(eval_iters):
             batch = next(dataloader)
-            # disable kl for evaluation purposes
-            td = rollout(
-                batch, model, ref_model, reward_model, max_new_tokens=50, kl_coef=0
-            )
+            # NOTE: disable kl for evaluation
+            td = rollout_from_model.rollout_from_data(batch, kl_coef=0.0)
             rewards[k] = td.get(("next", "reward")).sum(dim=1).mean().item()
         test_reward = rewards.mean()
 
@@ -84,7 +111,9 @@ def create_reward_estimator(
             with ctx:
                 _, response_reward = reward_model(
                     input_ids=response_ids,
-                    attention_mask=(response_ids != tokenizer.pad_token_id).to(torch.int64),
+                    attention_mask=(response_ids != tokenizer.pad_token_id).to(
+                        torch.int64
+                    ),
                 )
             reward = (response_reward - test_label_reward).item()
             response_ids = response_ids[0, test_rindex:]
@@ -106,8 +135,15 @@ def create_reward_estimator(
     return estimate_reward
 
 
-@hydra.main(version_base="1.1", config_path="config", config_name="train_rlhf")
-def main(cfg):
+# @hydra.main(version_base="1.1", config_path="config", config_name="train_rlhf")
+def main():
+    cfg = OmegaConf.load("config/train_rlhf.yaml")
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="rlhf-training",
+        # track hyperparameters and run metadata
+        config=cfg,
+    )
     query_logger = get_file_logger("query_logger", "rlhf_query_logger.log")
     val_reward_logger = get_file_logger("val_reward_logger", "rlhf_valid_rewards.log")
 
@@ -142,15 +178,27 @@ def main(cfg):
 
     ctx = setup(device, dtype)
 
-    train_loader = get_prompt_dataloader(data_cfg, device=device, split="train")
-    val_loader = get_prompt_dataloader(data_cfg, device=device, split="valid")
+    train_loader = get_dataloader(
+        data_cfg.batch_size,
+        data_cfg.block_size,
+        PromptData,
+        device,
+        dataset_name="CarperAI/openai_summarize_tldr",
+        split="train",
+    )
+    val_loader = get_dataloader(
+        data_cfg.batch_size,
+        data_cfg.block_size,
+        PromptData,
+        device,
+        dataset_name="CarperAI/openai_summarize_tldr",
+        split="valid",
+    )
 
     actor, critic, critic_head, model = init_actor_critic(
         resolve_name_or_path(transformer_name_or_path), dropout, device, compile_
     )
-    critic.eval()
     ref_model = deepcopy(model).to("cuda:1")
-    ref_model.eval()
     ref_model.requires_grad_(False)
     layers = model.transformer.h
     num_layers = len(layers)
@@ -166,7 +214,9 @@ def main(cfg):
     reward_model.eval()
     reward_model.requires_grad_(False)
 
-    adv_fn = GAE(value_network=critic, gamma=0.99, lmbda=0.95, average_gae=True)
+    adv_fn = GAE(
+        value_network=critic, gamma=0.99, lmbda=0.95, average_gae=True, shifted=True
+    )
     loss_fn = ClipPPOLoss(actor, critic_head)
 
     test_prompt = next(val_loader)
@@ -180,7 +230,9 @@ def main(cfg):
         ref_model=ref_model,
     )
 
-    optimizer = torch.optim.AdamW(loss_fn.parameters(), **train_cfg.optimizer)
+    optimizer = torch.optim.AdamW(
+        [p for p in loss_fn.parameters() if p.requires_grad], **train_cfg.optimizer
+    )
     scheduler = None
     if train_cfg.decay_lr:
         scheduler = CosineAnnealingLR(optimizer, **train_cfg.scheduler)
@@ -189,12 +241,16 @@ def main(cfg):
         storage=LazyTensorStorage(episode_length * num_rollouts_per_epoch),
         batch_size=episode_length * batch_size,
         sampler=SamplerWithoutReplacement(),
+        prefetch=10,
     )
     rb_ppo = TensorDictReplayBuffer(
         storage=LazyTensorStorage(episode_length * batch_size),
         batch_size=ppo_batch_size,
         sampler=SamplerWithoutReplacement(),
+        prefetch=10,
     )
+
+    rollout_from_model = RolloutFromModel(model, ref_model, reward_model)
 
     best_val_reward = float("-inf")
     it = 0  # it is equivalent to batch_size number of episodes
@@ -202,37 +258,53 @@ def main(cfg):
         for _epoch in range(1, max_epochs + 1):
             rb.empty()
             rollout_rewards = []
-            kl_coef = min(max((6 * it) / max_epochs, 0.1), 6)
+            rollout_kl = []
+            kl_controller = AdaptiveKLController(0.1, 6, 10000)
             for _ in range(0, num_rollouts_per_epoch, batch_size):
                 batch = next(train_loader)
-                td = rollout(
-                    batch,
-                    model,
-                    ref_model,
-                    reward_model,
-                    max_new_tokens=50,
-                    kl_coef=kl_coef,
+                td = rollout_from_model.rollout_from_data(
+                    batch, kl_coef=kl_controller.value
                 )
                 with torch.no_grad(), ctx:
+                    # moving this to within epoch
                     adv_fn(td)
                 # it's possible we didn't fill the replay buffer in the last iteration if
                 # generation stopped early, so we empty first before repopulating
                 rb.extend(flatten_td(td))
                 done = td.get(("next", "done"))
-                next_reward = td.get(("next", "reward"))[done]
+                next_reward = td.get(("next", "reward_raw"))[done]
+                next_kl = td.get(("next", "reward_kl"))[done]
                 rollout_rewards.append(next_reward.mean().cpu().item())
+                rollout_kl.append(next_kl.mean().cpu().item())
             rollout_reward = torch.tensor(rollout_rewards).mean().cpu().item()
+            rollout_kl_reward = torch.tensor(rollout_kl).mean().cpu().item()
+            # recover true kl
+            rollout_kl = -rollout_kl_reward / kl_controller.value
+            kl_controller.update(rollout_kl, num_rollouts_per_epoch / batch_size)
+
             # FIXME: THIS PPO CYCLE WAS DIFFERENT wrt trlx. @tcbegley please double check
             # they sample batch_size from rb and then do minibatches ppo_batch_size within
             if it % log_interval == 0:
-                val_reward_logger.info(f"TRAIN: {it=}: {rollout_reward=:.4f}")
+                val_reward_logger.info(
+                    f"TRAIN: {it=}: {rollout_reward=:.4f} {rollout_kl_reward=:.4f} {rollout_kl=:.4f}"
+                )
+                wandb.log(
+                    {
+                        "rollout_reward": rollout_reward,
+                        "rollout_kl_reward": rollout_kl_reward,
+                        "rollout_kl": rollout_kl,
+                    },
+                    step=it,
+                )
                 pbar.set_description(f"TRAIN: {it=}: {rollout_reward=:.4f}")
 
             for batch in rb:
                 rb_ppo.empty()
                 rb_ppo.extend(batch)
-                for ppo_epoch in range(ppo_num_epochs):  # PPO epochs
+                for _ in range(ppo_num_epochs):  # PPO epochs
                     optimizer.zero_grad()
+                    # why don't we optimize at each step? Is accumulating grads better?
+                    # usually more small steps is better than a giant one
                     for minibatch in rb_ppo:  # GO over RB
                         minibatch = minibatch.to(device, non_blocking=True)
                         with ctx:
@@ -252,6 +324,7 @@ def main(cfg):
                 if it % eval_interval == 0:
                     val_reward = estimate_reward(model, val_loader)
                     val_reward_logger.info(f"VALID: {it=}: {val_reward=:.4f}")
+                    wandb.log({"val_reward": val_reward}, step=it)
                     pbar.set_description(f"VALID: {it=}: {val_reward=:.4f}")
                     if val_reward > best_val_reward or always_save_checkpoint:
                         best_val_reward = val_reward
