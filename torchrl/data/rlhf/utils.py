@@ -284,7 +284,7 @@ class RolloutFromModel:
         # thereby moving back to right padding for reward model
         generated = self._padded_left_to_right(
             samples,
-            input_ids.shape[1] + self.max_new_tokens,
+            sequence_length=input_ids.shape[1] + self.max_new_tokens,
             eos_token_id=self.EOS_TOKEN_ID,
         )
         generated_tokens = self._get_generated_tokens(generated, batch.prompt_rindex)
